@@ -103,20 +103,27 @@
     };
     MainModel* m = nil;
     
+    // 常规的属性转化
     m = [MainModel yy_modelWithJSON:json];
     NSLog(@"mainName: %@", m.mainName);
     NSLog(@"number: %d", m.number);
     
+    // 增加代理类ModelA代理对应协议的nameA属性
     [MainModel addProxyClass:ModelA.class];
     m = [MainModel yy_modelWithJSON:json];
     NSLog(@"nameA: %@", m.nameA);
+    
+    // 增加代理类ModelB代理对应协议的nameB属性
     [MainModel addProxyClass:ModelB.class];
     [m yy_modelSetWithJSON:json];
     NSLog(@"nameB: %@", m.nameB);
     
     MainModelEx* mx = nil;
+    
+    // 增加代理类ModelC代理对应协议的nameC属性
     [MainModelEx addProxyClass:ModelC.class];
     mx = [MainModelEx yy_modelWithJSON:json];
+    // 由于MainModelEx继承了MainModel，所以也继承了MainModel的代理类
     NSLog(@"mainName: %@", mx.mainName);
     NSLog(@"number: %d", mx.number);
     NSLog(@"nameA: %@", mx.nameA);

@@ -29,7 +29,7 @@
     NSMutableDictionary* mapper = nil;
     NSDictionary* temp = nil;
     
-    // 0. 去获取父类的映射表
+    // 0. 去获取超类的映射表
     Class superClass = [self superclass];
     if ([superClass respondsToSelector:@selector(modelCustomPropertyMapper)]) {
         NSDictionary* mapperFromSuper = [superClass modelCustomPropertyMapper];
@@ -55,7 +55,7 @@
     NSMutableDictionary* mapper = nil;
     NSDictionary* temp = nil;
     
-    // 0. 去获取父类的映射表
+    // 0. 去获取超类的映射表
     Class superClass = [self superclass];
     if ([superClass respondsToSelector:@selector(modelContainerPropertyGenericClass)]) {
         NSDictionary* mapperFromSuper = [superClass modelContainerPropertyGenericClass];
@@ -83,10 +83,22 @@
     if ([super instancesRespondToSelector:aSelector]) {
         return YES;
     }
+    
     // 1. 从代理类列表里匹配
     for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
         if ([cls instancesRespondToSelector:aSelector]) {
             return YES;
+        }
+    }
+    
+    // 2. 从超类的代理列表里匹配
+    Class superClass = [self superclass];
+    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
+        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
+        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
+            if ([cls instancesRespondToSelector:aSelector]) {
+                return YES;
+            }
         }
     }
     
@@ -98,16 +110,29 @@
     if ([super respondsToSelector:aSelector]) {
         return YES;
     }
+    
     // 1. 从代理对象列表里匹配
     for (id target in self.proxyTargets) {
         if ([target respondsToSelector:aSelector]) {
             return YES;
         }
     }
+    
     // 2. 从代理类列表里匹配
     for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
         if ([cls instancesRespondToSelector:aSelector]) {
             return YES;
+        }
+    }
+    
+    // 3. 从超类的代理列表里匹配
+    Class superClass = [self superclass];
+    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
+        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
+        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
+            if ([cls instancesRespondToSelector:aSelector]) {
+                return YES;
+            }
         }
     }
     
@@ -123,6 +148,7 @@
             return [target methodSignatureForSelector:aSelector];
         }
     }
+    
     // 1. 从代理类列表里匹配
     for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
         if ([cls instancesRespondToSelector:aSelector]) {
@@ -131,6 +157,20 @@
             
             // 调用代理对象对应的方法来处理
             return [target methodSignatureForSelector:aSelector];
+        }
+    }
+    
+    // 2. 从超类的代理列表里匹配
+    Class superClass = [self superclass];
+    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
+        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
+        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
+            if ([cls instancesRespondToSelector:aSelector]) {
+                id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
+                [self.proxyTargets addObject:target];// 持有代理对象
+                // 调用代理对象对应的方法来处理
+                return [target methodSignatureForSelector:aSelector];
+            }
         }
     }
     
@@ -157,6 +197,20 @@
         }
     }
     
+    // 2. 从超类的代理列表里匹配
+    Class superClass = [self superclass];
+    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
+        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
+        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
+            if ([cls instancesRespondToSelector:aSelector]) {
+                id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
+                [self.proxyTargets addObject:target];// 持有代理对象
+                // 调用代理对象对应的方法来处理
+                return [anInvocation invokeWithTarget:target];
+            }
+        }
+    }
+    
     [super forwardInvocation:anInvocation];
 }
 
@@ -174,15 +228,6 @@ static const char _proxyClassesKey;
         __proxyClasses = [NSMutableArray array];
         objc_setAssociatedObject(self, &_proxyClassesKey, __proxyClasses,
                                  OBJC_ASSOCIATION_RETAIN);
-        
-        // 获取父类的代理类列表，这里会造成一定的内存浪费
-        Class superClass = [self superclass];
-        if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
-            NSArray* proxyClassesFromSuper = superClass._proxyClasses;
-            if (proxyClassesFromSuper.count) {
-                [__proxyClasses addObjectsFromArray:proxyClassesFromSuper];
-            }
-        }
     }
     return __proxyClasses;
 }
