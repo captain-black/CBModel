@@ -10,234 +10,244 @@
 #import <objc/runtime.h>
 
 @interface CBModel ()
-@property(nonatomic, readonly, class) NSMutableArray<Class>* _Nullable _proxyClasses;
-@property(nonatomic, readonly) NSMutableArray* _Nullable proxyTargets;
+@property(nonatomic, readonly, class) YYClassInfo* classInfo;
+@property(nonatomic, readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;// 存放强引用的动态属性
+@property(nonatomic, readonly) NSMapTable<NSString*, id>* wDynamicProperties;// 存放弱引用的动态属性
 @end
+
+static NSString* _Nullable propertyNameForSelector(Class cls, SEL _cmd) {
+    
+    do {
+        if (![cls respondsToSelector:@selector(classInfo)]) {
+            break;
+        }
+        for (YYClassPropertyInfo* p in [cls classInfo].propertyInfos.allValues) {
+            if (sel_isEqual(_cmd, p.getter)) {
+                return p.name;
+            } else if (sel_isEqual(_cmd, p.setter)) {
+                return p.name;
+            }
+        }
+    } while ((cls = [cls superclass]));
+    
+    return nil;
+}
+
+#define IMP_FOR_TYPE(typeName, _TYPE_)                                                  \
+static _TYPE_ _getter_for_##typeName##_(CBModel* self, SEL _cmd) {                      \
+    NSString* p = propertyNameForSelector([self class], _cmd);                          \
+    unsigned int size = sizeof(_TYPE_);                                                 \
+    void* value = alloca(size);                                                         \
+    if (@available(iOS 11.0, *)) {                                                      \
+        [self.sDynamicProperties[p] getValue:value size:size];                          \
+    } else {                                                                            \
+        [self.sDynamicProperties[p] getValue:value];                                    \
+    }                                                                                   \
+    return *(_TYPE_*)value;                                                             \
+}                                                                                       \
+                                                                                        \
+static void _setter_for_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {          \
+    NSString* p = propertyNameForSelector([self class], _cmd);                          \
+    [self willChangeValueForKey:p];                                                     \
+    self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
+    [self willChangeValueForKey:p];                                                     \
+}
+
+static id _getter_for_obj_strong_(CBModel* self, SEL _cmd) {
+    NSString* p = propertyNameForSelector([self class], _cmd);
+    return self.sDynamicProperties[p];
+}
+                                                                                    
+static void _setter_for_obj_strong_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = propertyNameForSelector([self class], _cmd);
+    [self willChangeValueForKey:p];
+    self.sDynamicProperties[p] = value;
+    [self didChangeValueForKey:p];
+}
+                                                                                    
+static void _setter_for_obj_copy_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = propertyNameForSelector([self class], _cmd);
+    [self willChangeValueForKey:p];
+    self.sDynamicProperties[p] = [value copy];
+    [self didChangeValueForKey:p];
+}
+
+static id _getter_for_obj_weak_(CBModel* self, SEL _cmd) {
+    NSString* p = propertyNameForSelector([self class], _cmd);
+    return [self.wDynamicProperties objectForKey:p];
+}
+                                                                                    
+static void _setter_for_obj_weak_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = propertyNameForSelector([self class], _cmd);
+    [self willChangeValueForKey:p];
+    [self.wDynamicProperties setObject:value
+                                forKey:p];
+    [self didChangeValueForKey:p];
+}
+
+IMP_FOR_TYPE(char, char);
+IMP_FOR_TYPE(short, short);
+IMP_FOR_TYPE(int, int);
+//IMP_FOR_TYPE(long, long);
+IMP_FOR_TYPE(longLong, long long);
+IMP_FOR_TYPE(unsignedChar, unsigned char);
+IMP_FOR_TYPE(unsignedInt, unsigned int);
+IMP_FOR_TYPE(unsignedShort, unsigned short);
+//IMP_FOR_TYPE(unsignedLong, unsigned long);
+IMP_FOR_TYPE(unsignedLongLong, unsigned long long);
+IMP_FOR_TYPE(float, float);
+IMP_FOR_TYPE(double, double);
+IMP_FOR_TYPE(bool, bool);
+
+
+static IMP impForProperty(BOOL setterOrGetter, YYEncodingType encodingType) {
+    switch (encodingType & YYEncodingTypeMask) {
+        case YYEncodingTypeBool:
+            return setterOrGetter ? (IMP)_setter_for_bool_ : (IMP)_getter_for_bool_;
+            break;
+        case YYEncodingTypeInt8:
+            return setterOrGetter ? (IMP)_setter_for_char_ : (IMP)_getter_for_char_;
+            break;
+        case YYEncodingTypeUInt8:
+            return setterOrGetter ? (IMP)_setter_for_unsignedChar_ : (IMP)_getter_for_unsignedChar_;
+            break;
+        case YYEncodingTypeInt16:
+            return setterOrGetter ? (IMP)_setter_for_short_ : (IMP)_getter_for_short_;
+            break;
+        case YYEncodingTypeUInt16:
+            return setterOrGetter ? (IMP)_setter_for_unsignedShort_ : (IMP)_getter_for_unsignedShort_;
+            break;
+        case YYEncodingTypeInt32:
+            return setterOrGetter ? (IMP)_setter_for_int_ : (IMP)_getter_for_int_;
+            break;
+        case YYEncodingTypeUInt32:
+            return setterOrGetter ? (IMP)_setter_for_unsignedInt_ : (IMP)_getter_for_unsignedInt_;
+            break;
+        case YYEncodingTypeInt64:
+            return setterOrGetter ? (IMP)_setter_for_longLong_ : (IMP)_getter_for_longLong_;
+            break;
+        case YYEncodingTypeUInt64:
+            return setterOrGetter ? (IMP)_setter_for_unsignedLongLong_ : (IMP)_getter_for_unsignedLongLong_;
+            break;
+        case YYEncodingTypeFloat:
+            return setterOrGetter ? (IMP)_setter_for_float_ : (IMP)_getter_for_float_;
+            break;
+        case YYEncodingTypeDouble:
+            return setterOrGetter ? (IMP)_setter_for_double_ : (IMP)_getter_for_double_;
+            break;
+        case YYEncodingTypeClass:
+        case YYEncodingTypeObject:
+        case YYEncodingTypeBlock:
+            if (encodingType & YYEncodingTypePropertyWeak) {
+                return setterOrGetter ? (IMP)_setter_for_obj_weak_ : (IMP)_getter_for_obj_weak_;
+            } else if (encodingType & YYEncodingTypePropertyCopy) {
+                return setterOrGetter ? (IMP)_setter_for_obj_copy_ : (IMP)_getter_for_obj_strong_;
+            } else {
+                return setterOrGetter ? (IMP)_setter_for_obj_strong_ : (IMP)_getter_for_obj_strong_;
+            }
+            break;
+    }
+    return NULL;
+}
+
 @implementation CBModel
 
 #pragma mark - public
-+ (void)addProxyClass:(Class)cls {
-    NSAssert(cls != self, @"类本身不能作为代理类");
-    NSAssert(![self isKindOfClass:cls], @"先祖类不能作为代理类");
-    [self._proxyClasses addObject:cls];
-    // 添加了代理类，相当于给类扩展了方法和属性，所以要把本类的YYClassInfo标记为需要更新
-    [[YYClassInfo classInfoWithClass:self] setNeedUpdate];
+static const char modelCustomPropertyMapperKey;
++ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
+    return objc_getAssociatedObject(self, &modelCustomPropertyMapperKey);
 }
 
-#pragma mark - <YYModel>
-+ (nullable NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    NSMutableDictionary* mapper = nil;
-    NSDictionary* temp = nil;
-    
-    // 0. 去获取超类的映射表
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(modelCustomPropertyMapper)]) {
-        NSDictionary* mapperFromSuper = [superClass modelCustomPropertyMapper];
-        if (mapperFromSuper.count) {
-            mapper = mapper?:[NSMutableDictionary dictionary];
-            [mapper addEntriesFromDictionary:mapperFromSuper];
-        }
-    }
-    
-    // 1. 去获取代理类的映射表
-    if (self.proxyClasses.count) {
-        mapper = mapper?:[NSMutableDictionary dictionary];
-        for (Class cls in self.proxyClasses) {
-            temp = [cls modelCustomPropertyMapper];
-            [mapper addEntriesFromDictionary:temp];
-        }
-    }
-    
-    return mapper;
++ (void)setModelCustomPropertyMapper:(NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
+    objc_setAssociatedObject(self, &modelCustomPropertyMapperKey,
+                             modelCustomPropertyMapper,
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
-+ (nullable NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass {
-    NSMutableDictionary* mapper = nil;
-    NSDictionary* temp = nil;
-    
-    // 0. 去获取超类的映射表
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(modelContainerPropertyGenericClass)]) {
-        NSDictionary* mapperFromSuper = [superClass modelContainerPropertyGenericClass];
-        if (mapperFromSuper.count) {
-            mapper = mapper?:[NSMutableDictionary dictionary];
-            [mapper addEntriesFromDictionary:mapperFromSuper];
-        }
-    }
-    
-    // 1. 去获取代理类的映射表
-    if (self.proxyClasses.count) {
-        mapper = mapper?:[NSMutableDictionary dictionary];
-        for (Class cls in self.proxyClasses) {
-            temp = [cls modelContainerPropertyGenericClass];
-            [mapper addEntriesFromDictionary:temp];
-        }
-    }
-    
-    return mapper;
+static const char modelContainerPropertyGenericClassKey;
++ (NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass {
+    return objc_getAssociatedObject(self, &modelContainerPropertyGenericClassKey);
 }
 
-#pragma mark - 消息转发
-+ (BOOL)instancesRespondToSelector:(SEL)aSelector {
-    // 0. 先从超类里匹配
-    if ([super instancesRespondToSelector:aSelector]) {
-        return YES;
-    }
++ (void)setModelContainerPropertyGenericClass:(NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass {
+    objc_setAssociatedObject(self, &modelContainerPropertyGenericClassKey,
+                             modelContainerPropertyGenericClass,
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
++ (NSString* _Nullable)_propertyNameForSeletor:(SEL)sel {
+    Class cls = self;
     
-    // 1. 从代理类列表里匹配
-    for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
-        if ([cls instancesRespondToSelector:aSelector]) {
-            return YES;
+    do {
+        if (![cls respondsToSelector:@selector(classInfo)]) {
+            break;
         }
-    }
-    
-    // 2. 从超类的代理列表里匹配
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
-        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
-        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
-            if ([cls instancesRespondToSelector:aSelector]) {
-                return YES;
+        for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
+            if (sel_isEqual(sel, p.getter)) {
+                return p.name;
+            } else if (sel_isEqual(sel, p.setter)) {
+                return p.name;
             }
         }
+    } while ((cls = [cls superclass]));
+    
+    return nil;
+}
+
+@synthesize sDynamicProperties = _sDynamicProperties;
+- (NSMutableDictionary<NSString*, id> *)sDynamicProperties {
+    if (_sDynamicProperties == nil) {
+        _sDynamicProperties = [NSMutableDictionary dictionary];
     }
+    return _sDynamicProperties;
+}
+
+@synthesize wDynamicProperties = _wDynamicProperties;
+- (NSMapTable<NSString*, id> *)wDynamicProperties {
+    if (_wDynamicProperties == nil) {
+        _wDynamicProperties = [NSMapTable strongToWeakObjectsMapTable];
+    }
+    return _wDynamicProperties;
+}
+
+#pragma mark - 动态实现方法
++ (BOOL)resolveClassMethod:(SEL)sel {
+    return [super resolveClassMethod:sel];
+}
+
++ (BOOL)resolveInstanceMethod:(SEL)sel {
+    Class cls = self;
+    do {
+        if (![cls respondsToSelector:@selector(classInfo)]) {
+            break;
+        }
+        for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
+            if (sel_isEqual(sel, p.getter)) {
+                IMP imp = impForProperty(NO, p.type);
+                if (imp) {
+                    return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
+                }
+            } else if (sel_isEqual(sel, p.setter)) {
+                IMP imp = impForProperty(YES, p.type);
+                if (imp) {
+                    return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
+                }
+            }
+        }
+    } while ((cls = [cls superclass]));
     
     return NO;
 }
 
-- (BOOL)respondsToSelector:(SEL)aSelector {
-    // 0. 先从超类对象里匹配
-    if ([super respondsToSelector:aSelector]) {
-        return YES;
++ (YYClassInfo *)classInfo {
+    YYClassInfo* classInfo = nil;
+    classInfo = objc_getAssociatedObject(self, "classInfo");
+    if (classInfo == nil || classInfo.needUpdate) {
+        classInfo = [YYClassInfo classInfoWithClass:self];
+        objc_setAssociatedObject(self, "classInfo", classInfo, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     
-    // 1. 从代理对象列表里匹配
-    for (id target in self.proxyTargets) {
-        if ([target respondsToSelector:aSelector]) {
-            return YES;
-        }
-    }
-    
-    // 2. 从代理类列表里匹配
-    for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
-        if ([cls instancesRespondToSelector:aSelector]) {
-            return YES;
-        }
-    }
-    
-    // 3. 从超类的代理列表里匹配
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
-        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
-        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
-            if ([cls instancesRespondToSelector:aSelector]) {
-                return YES;
-            }
-        }
-    }
-    
-    return NO;
-    
-}
-
-- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
-    // 0. 先从代理对象列表里匹配
-    for (id target in self.proxyTargets) {
-        if ([target respondsToSelector:aSelector]) {
-            // 调用代理对象对应的方法来处理
-            return [target methodSignatureForSelector:aSelector];
-        }
-    }
-    
-    // 1. 从代理类列表里匹配
-    for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
-        if ([cls instancesRespondToSelector:aSelector]) {
-            id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
-            [self.proxyTargets addObject:target];// 持有代理对象
-            
-            // 调用代理对象对应的方法来处理
-            return [target methodSignatureForSelector:aSelector];
-        }
-    }
-    
-    // 2. 从超类的代理列表里匹配
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
-        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
-        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
-            if ([cls instancesRespondToSelector:aSelector]) {
-                id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
-                [self.proxyTargets addObject:target];// 持有代理对象
-                // 调用代理对象对应的方法来处理
-                return [target methodSignatureForSelector:aSelector];
-            }
-        }
-    }
-    
-    return [super methodSignatureForSelector:aSelector];
-}
-
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    SEL aSelector = [anInvocation selector];
-    
-    // 0. 先从代理对象列表里匹配
-    for (id target in self.proxyTargets) {
-        if ([target respondsToSelector:aSelector]) {
-            // 调用代理对象对应的方法来处理
-            return [anInvocation invokeWithTarget:target];
-        }
-    }
-    // 1. 从代理类列表里匹配
-    for (Class cls in self.class.proxyClasses.reverseObjectEnumerator) {
-        if ([cls instancesRespondToSelector:aSelector]) {
-            id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
-            [self.proxyTargets addObject:target];// 持有代理对象
-            // 调用代理对象对应的方法来处理
-            return [anInvocation invokeWithTarget:target];
-        }
-    }
-    
-    // 2. 从超类的代理列表里匹配
-    Class superClass = [self superclass];
-    if ([superClass respondsToSelector:@selector(_proxyClasses)]) {
-        NSArray* proxyClassesFromSuper = superClass.proxyClasses;
-        for (Class cls in proxyClassesFromSuper.reverseObjectEnumerator) {
-            if ([cls instancesRespondToSelector:aSelector]) {
-                id target = [[cls alloc] init];// 匹配成功，创建代理对象来处理
-                [self.proxyTargets addObject:target];// 持有代理对象
-                // 调用代理对象对应的方法来处理
-                return [anInvocation invokeWithTarget:target];
-            }
-        }
-    }
-    
-    [super forwardInvocation:anInvocation];
-}
-
-#pragma mark - getter & setter
-+ (NSArray<Class> *)proxyClasses {
-    return self._proxyClasses;
-}
-
-static const char _proxyClassesKey;
-+ (NSMutableArray<Class> *_Nullable)_proxyClasses {
-    // 因为Class在底层也是一个NSObject对象，所以也能用对象关联
-    NSMutableArray *__proxyClasses = objc_getAssociatedObject(self,
-                                                             &_proxyClassesKey);
-    if (!__proxyClasses) {
-        __proxyClasses = [NSMutableArray array];
-        objc_setAssociatedObject(self, &_proxyClassesKey, __proxyClasses,
-                                 OBJC_ASSOCIATION_RETAIN);
-    }
-    return __proxyClasses;
-}
-
-@synthesize proxyTargets = _proxyTargets;
-- (NSMutableArray *_Nullable)proxyTargets {
-    if (!_proxyTargets) {
-        _proxyTargets = [NSMutableArray array];
-    }
-    return _proxyTargets;
+    return classInfo;
 }
 
 @end

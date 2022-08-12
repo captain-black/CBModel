@@ -13,9 +13,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface CBModel : NSObject <YYModel>
 
-@property(nonatomic, readonly, class) NSArray<Class>* _Nullable proxyClasses;
+@property (nonatomic, copy, class) NSDictionary<NSString*, id>* modelCustomPropertyMapper;
+@property (nonatomic, copy, class) NSDictionary<NSString*, id>* modelContainerPropertyGenericClass;
 
-+ (void)addProxyClass:(Class)cls;
++ (nullable NSDictionary<NSString *,id> *)modelCustomPropertyMapper NS_REQUIRES_SUPER;
+
++ (nullable NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass NS_REQUIRES_SUPER;
 
 @end
 

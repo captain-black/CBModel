@@ -11,7 +11,10 @@
 #import <CBModel/CBModel.h>
 
 @protocol ModelA
-@property(nonatomic, copy) NSString* nameA;
+@property(nonatomic, copy, setter=setAA:, getter=AA) NSString* nameA;
+@property(nonatomic, weak) NSArray* ar;
+@optional
+- (id)testMethod;
 @end
 @interface ModelA : CBModel
 @property(nonatomic, copy) NSString* nameA;
@@ -19,9 +22,11 @@
 @implementation ModelA
 
 + (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    return @{
-        @"nameA": @"a"
-    };
+    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
+    [dic addEntriesFromDictionary:@{
+        @"AA": @"a"
+    }];
+    return dic;
 }
 
 @end
@@ -35,9 +40,11 @@
 @implementation ModelB
 
 + (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    return @{
+    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
+    [dic addEntriesFromDictionary:@{
         @"nameB": @"b.name"
-    };
+    }];
+    return dic;
 }
 
 @end
@@ -47,11 +54,12 @@
 @property(nonatomic, assign) int number;
 @end
 @implementation MainModel
-@dynamic nameA, nameB;
+@dynamic nameA, nameB, ar;
 + (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
     NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
     [dic addEntriesFromDictionary:@{
-        @"number": @"main.num"
+        @"number": @"main.num",
+        @"nameA": @"a"
     }];
     return dic;
 }
@@ -66,9 +74,11 @@
 @implementation ModelC
 @synthesize nameC;
 + (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    return @{
+    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
+    [dic addEntriesFromDictionary:@{
         @"nameC": @"c"
-    };
+    }];
+    return dic;
 }
 @end
 
@@ -81,7 +91,7 @@
 @end
 
 @interface CBViewController ()
-
+@property(nonatomic, weak) id delegate;
 @end
 
 @implementation CBViewController
@@ -101,6 +111,7 @@
         },
         @"c": @"这是c的名字"
     };
+    
     MainModel* m = nil;
     
     // 常规的属性转化
@@ -109,34 +120,49 @@
     NSLog(@"number: %d", m.number);
     
     // 增加代理类ModelA代理对应协议的nameA属性
-    [MainModel addProxyClass:ModelA.class];
-    m = [MainModel yy_modelWithJSON:json];
     NSLog(@"nameA: %@", m.nameA);
     
     // 增加代理类ModelB代理对应协议的nameB属性
-    [MainModel addProxyClass:ModelB.class];
-    [m yy_modelSetWithJSON:json];
     NSLog(@"nameB: %@", m.nameB);
+    
+    m = [[MainModel alloc] init];
+    NSString* s = [NSString stringWithFormat:@"%s_d", "23"];
+    @autoreleasepool {
+        NSArray* ar = @[@"1", @"2"];
+        m.ar = ar;
+        NSLog(@"%@", m.ar);
+    }
+    
+    NSLog(@"nameA: %@", s);
+    
+    self.delegate = nil;
     
     MainModelEx* mx = nil;
     
     // 增加代理类ModelC代理对应协议的nameC属性
-    [MainModelEx addProxyClass:ModelC.class];
+    NSMutableDictionary* dic = [NSMutableDictionary dictionary];
+    [dic addEntriesFromDictionary:ModelA.modelCustomPropertyMapper];
+    [dic addEntriesFromDictionary:ModelB.modelCustomPropertyMapper];
+    [dic addEntriesFromDictionary:MainModel.modelCustomPropertyMapper];
+    [dic addEntriesFromDictionary:ModelC.modelCustomPropertyMapper];
+    [dic addEntriesFromDictionary:MainModelEx.modelCustomPropertyMapper];
+    MainModelEx.modelCustomPropertyMapper = dic;
+    
     mx = [MainModelEx yy_modelWithJSON:json];
-    // 由于MainModelEx继承了MainModel，所以也继承了MainModel的代理类
     NSLog(@"mainName: %@", mx.mainName);
     NSLog(@"number: %d", mx.number);
     NSLog(@"nameA: %@", mx.nameA);
     NSLog(@"nameB: %@", mx.nameB);
     NSLog(@"nameC: %@", mx.nameC);
-    
-    NSDictionary* dic = [mx yy_modelToJSONObject];
-    NSLog(@"%@", dic);
+
+    NSDictionary* _ = [mx yy_modelToJSONObject];
+    NSLog(@"%@", _);
     
 }
 
 - (void)didReceiveMemoryWarning
 {
+    NSLog(@"delegate: %@", self.delegate);
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
 }
