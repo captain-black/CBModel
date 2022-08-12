@@ -178,18 +178,15 @@ static const char modelContainerPropertyGenericClassKey;
 + (NSString* _Nullable)_propertyNameForSeletor:(SEL)sel {
     Class cls = self;
     
-    do {
-        if (![cls respondsToSelector:@selector(classInfo)]) {
-            break;
+    if (![cls respondsToSelector:@selector(classInfo)]) {
+        return nil;
+    }
+    for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
+        if (   sel_isEqual(sel, p.getter)
+            || sel_isEqual(sel, p.setter)) {
+            return p.name;
         }
-        for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
-            if (sel_isEqual(sel, p.getter)) {
-                return p.name;
-            } else if (sel_isEqual(sel, p.setter)) {
-                return p.name;
-            }
-        }
-    } while ((cls = [cls superclass]));
+    }
     
     return nil;
 }
@@ -216,25 +213,22 @@ static const char modelContainerPropertyGenericClassKey;
 }
 
 + (BOOL)resolveInstanceMethod:(SEL)sel {
+    if ([super resolveInstanceMethod:sel]) {
+        return YES;
+    }
+    
     Class cls = self;
-    do {
-        if (![cls respondsToSelector:@selector(classInfo)]) {
-            break;
+    for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
+        IMP imp = nil;
+        if (sel_isEqual(sel, p.getter)) {
+            imp = impForProperty(NO, p.type);
+        } else if (sel_isEqual(sel, p.setter)) {
+            imp = impForProperty(YES, p.type);
         }
-        for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
-            if (sel_isEqual(sel, p.getter)) {
-                IMP imp = impForProperty(NO, p.type);
-                if (imp) {
-                    return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
-                }
-            } else if (sel_isEqual(sel, p.setter)) {
-                IMP imp = impForProperty(YES, p.type);
-                if (imp) {
-                    return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
-                }
-            }
+        if (imp) {
+            return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
         }
-    } while ((cls = [cls superclass]));
+    }
     
     return NO;
 }
