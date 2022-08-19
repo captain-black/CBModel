@@ -9,6 +9,8 @@
 
 #import <objc/runtime.h>
 
+#import <YYModel/YYModel.h>
+
 @interface CBModel ()
 @property(nonatomic, readonly, class) YYClassInfo* classInfo;
 @property(nonatomic, readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;// 存放强引用的动态属性
@@ -152,29 +154,6 @@ static IMP impForProperty(BOOL setterOrGetter, YYEncodingType encodingType) {
 
 @implementation CBModel
 
-#pragma mark - public
-static const char modelCustomPropertyMapperKey;
-+ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    return objc_getAssociatedObject(self, &modelCustomPropertyMapperKey);
-}
-
-+ (void)setModelCustomPropertyMapper:(NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    objc_setAssociatedObject(self, &modelCustomPropertyMapperKey,
-                             modelCustomPropertyMapper,
-                             OBJC_ASSOCIATION_COPY_NONATOMIC);
-}
-
-static const char modelContainerPropertyGenericClassKey;
-+ (NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass {
-    return objc_getAssociatedObject(self, &modelContainerPropertyGenericClassKey);
-}
-
-+ (void)setModelContainerPropertyGenericClass:(NSDictionary<NSString *,id> *)modelContainerPropertyGenericClass {
-    objc_setAssociatedObject(self, &modelContainerPropertyGenericClassKey,
-                             modelContainerPropertyGenericClass,
-                             OBJC_ASSOCIATION_COPY_NONATOMIC);
-}
-
 + (NSString* _Nullable)_propertyNameForSeletor:(SEL)sel {
     Class cls = self;
     
@@ -213,24 +192,40 @@ static const char modelContainerPropertyGenericClassKey;
 }
 
 + (BOOL)resolveInstanceMethod:(SEL)sel {
-    if ([super resolveInstanceMethod:sel]) {
-        return YES;
-    }
-    
     Class cls = self;
-    for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
-        IMP imp = nil;
-        if (sel_isEqual(sel, p.getter)) {
-            imp = impForProperty(NO, p.type);
-        } else if (sel_isEqual(sel, p.setter)) {
-            imp = impForProperty(YES, p.type);
-        }
-        if (imp) {
-            return class_addMethod(cls, sel, imp, p.typeEncoding.UTF8String);
-        }
-    }
     
-    return NO;
+    YYClassPropertyInfo* targetPropertyInfo = nil;
+    BOOL isSetter;
+    
+    do {
+        if (![cls isSubclassOfClass:CBModel.class]) {
+            return [super resolveInstanceMethod:sel];
+        }
+        
+        for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
+            if (sel_isEqual(sel, p.getter)) {
+                targetPropertyInfo = p;
+                isSetter = NO;
+            } else if (sel_isEqual(sel, p.setter)) {
+                BOOL needSetter = NO;
+                needSetter |= !(p.type & YYEncodingTypePropertyReadonly);
+                needSetter |= p.type & YYEncodingTypePropertyDynamic;
+                if (needSetter) {
+                    targetPropertyInfo = p;
+                    isSetter = YES;
+                }
+            }
+        }
+        if (targetPropertyInfo) {
+            IMP imp = impForProperty(isSetter, targetPropertyInfo.type);
+            if (imp) {
+                return class_addMethod(cls, sel, imp, targetPropertyInfo.typeEncoding.UTF8String);
+            }
+        }
+    } while ((cls = [cls superclass]));
+    
+    
+    return [super resolveInstanceMethod:sel];
 }
 
 + (YYClassInfo *)classInfo {
