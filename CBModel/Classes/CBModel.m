@@ -206,14 +206,17 @@ static IMP impForProperty(BOOL setterOrGetter, YYEncodingType encodingType) {
             if (sel_isEqual(sel, p.getter)) {
                 targetPropertyInfo = p;
                 isSetter = NO;
-            } else if (sel_isEqual(sel, p.setter)) {
-                BOOL needSetter = NO;
-                needSetter |= !(p.type & YYEncodingTypePropertyReadonly);
-                needSetter |= p.type & YYEncodingTypePropertyDynamic;
-                if (needSetter) {
+            } else if (sel_isEqual(sel, p.setter)
+                       &&
+                       // 根据修饰符判断是否需要添加setter方法
+                       ( !(p.type & YYEncodingTypePropertyReadonly)
+                        || p.type & YYEncodingTypePropertyCopy
+                        || p.type & YYEncodingTypePropertyRetain
+                        || p.type & YYEncodingTypePropertyWeak
+                        || p.type & YYEncodingTypePropertyDynamic)
+                       ) {
                     targetPropertyInfo = p;
                     isSetter = YES;
-                }
             }
         }
         if (targetPropertyInfo) {
