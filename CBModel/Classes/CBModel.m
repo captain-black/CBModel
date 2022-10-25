@@ -187,36 +187,31 @@ static IMP impForProperty(BOOL setterOrGetter, YYEncodingType encodingType) {
 }
 
 #pragma mark - 动态实现方法
-+ (BOOL)resolveClassMethod:(SEL)sel {
-    return [super resolveClassMethod:sel];
-}
-
 + (BOOL)resolveInstanceMethod:(SEL)sel {
     Class cls = self;
     
-    YYClassPropertyInfo* targetPropertyInfo = nil;
-    BOOL isSetter;
+    if (![cls isSubclassOfClass:CBModel.class]) {
+        return [super resolveInstanceMethod:sel];
+    }
     
+    YYClassPropertyInfo* targetPropertyInfo = nil;
+    BOOL isSetter = NO;
     do {
-        if (![cls isSubclassOfClass:CBModel.class]) {
-            return [super resolveInstanceMethod:sel];
-        }
         
         for (YYClassPropertyInfo* p in cls.classInfo.propertyInfos.allValues) {
             if (sel_isEqual(sel, p.getter)) {
                 targetPropertyInfo = p;
                 isSetter = NO;
+                break;
             } else if (sel_isEqual(sel, p.setter)
                        &&
                        // 根据修饰符判断是否需要添加setter方法
                        ( !(p.type & YYEncodingTypePropertyReadonly)
-                        || p.type & YYEncodingTypePropertyCopy
-                        || p.type & YYEncodingTypePropertyRetain
-                        || p.type & YYEncodingTypePropertyWeak
                         || p.type & YYEncodingTypePropertyDynamic)
                        ) {
-                    targetPropertyInfo = p;
-                    isSetter = YES;
+                targetPropertyInfo = p;
+                isSetter = YES;
+                break;
             }
         }
         if (targetPropertyInfo) {
@@ -225,7 +220,7 @@ static IMP impForProperty(BOOL setterOrGetter, YYEncodingType encodingType) {
                 return class_addMethod(cls, sel, imp, targetPropertyInfo.typeEncoding.UTF8String);
             }
         }
-    } while ((cls = [cls superclass]));
+    } while ((cls = [cls superclass]) != CBModel.class);
     
     
     return [super resolveInstanceMethod:sel];
