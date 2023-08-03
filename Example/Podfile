@@ -4,7 +4,7 @@ platform :ios, '10.0'
 
 target 'CBModel_Example' do
   pod 'CBModel', :path => '../'
-  pod 'YYModel', :git => 'https://gitee.com/hidden_group/YYModel.git', :tag => '1.0.4.ext'
+
   target 'CBModel_Tests' do
     inherit! :search_paths
 

@@ -8,8 +8,8 @@
 
 Pod::Spec.new do |s|
   s.name             = 'CBModel'
-  s.version          = '0.1.5'
-  s.summary          = 'A short description of CBModel.'
+  s.version          = '1.0.0'
+  s.summary          = 'CBModel 为其子类在运行时动态绑定 getter 和 setter 的IMP.'
 
 # This description is used to generate tags and improve search results.
 #   * Think: What does it do? Why did you write it? What is the focus?
@@ -18,17 +18,19 @@ Pod::Spec.new do |s|
 #   * Finally, don't worry about the indent, CocoaPods strips it!
 
   s.description      = <<-DESC
-TODO: Add long description of the pod here.
+1. CBModel 的子类可以在Category中仅声明property，可交由 CBModel 在运行时动态添加缺省的getter 和 setter实现方法
+2. CBModel 的子类在声明遵从协议时，如果协议中带有property，那么也可交由 CBModel 在运行时动态添加缺省的getter 和 setter实现方法
+限制：CBModel 只对 @dynamic 且 nonatomic 修饰的 property 动态添加 getter、setter 实现
                        DESC
 
-  s.homepage         = 'https://github.com/Captain Black/CBModel'
+  s.homepage         = 'https://github.com/captain-black/CBModel'
   # s.screenshots     = 'www.example.com/screenshots_1', 'www.example.com/screenshots_2'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'Captain Black' => 'captainblack.soul@gmail.com' }
-  s.source           = { :git => 'https://github.com/Captain Black/CBModel.git', :tag => s.version.to_s }
+  s.source           = { :git => 'https://github.com/captain-black/CBModel.git', :tag => s.version.to_s }
   # s.social_media_url = 'https://twitter.com/<TWITTER_USERNAME>'
 
-  s.ios.deployment_target = '10.0'
+  s.ios.deployment_target = '8.0'
 
   s.source_files = 'CBModel/Classes/**/*'
   
@@ -38,5 +40,5 @@ TODO: Add long description of the pod here.
 
   # s.public_header_files = 'Pod/Classes/**/*.h'
   # s.frameworks = 'UIKit', 'MapKit'
-   
+  # s.dependency 'AFNetworking', '~> 2.3'
 end

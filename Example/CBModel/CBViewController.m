@@ -2,7 +2,7 @@
 //  CBViewController.m
 //  CBModel
 //
-//  Created by Captain Black on 08/09/2022.
+//  Created by Captain Black on 12/28/2022.
 //  Copyright (c) 2022 Captain Black. All rights reserved.
 //
 
@@ -10,88 +10,63 @@
 
 #import <CBModel/CBModel.h>
 
-@protocol ModelA
-@property(nonatomic, copy, setter=setAA:, getter=AA) NSString* nameA;
-@property(nonatomic, weak) NSArray* ar;
-@optional
-- (id)testMethod;
-@end
-@interface ModelA : CBModel
-@property(nonatomic, copy) NSString* nameA;
-@end
-@implementation ModelA
+struct kkw {
+    char a;
+    short d;
+};
 
-+ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
-    [dic addEntriesFromDictionary:@{
-        @"AA": @"a"
-    }];
-    return dic;
-}
+union uwd {
+    char a[2];
+    short c;
+};
 
-@end
+@protocol TestProtocol <NSObject>
 
-@protocol ModelB
-@property(nonatomic, copy) NSString* nameB;
-@end
-@interface ModelB : CBModel <ModelB>
-@property(nonatomic, copy) NSString* nameB;
-@end
-@implementation ModelB
-
-+ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
-    [dic addEntriesFromDictionary:@{
-        @"nameB": @"b.name"
-    }];
-    return dic;
-}
+@property (assign) long type;
+@property (nonatomic, assign) CGFloat ftype;
+@property (nonatomic) NSString* str;
+@property (nonatomic, assign) struct kkw k;
+@property (nonatomic) Class cls;
 
 @end
 
-@interface MainModel: CBModel <ModelA, ModelB>
-@property(nonatomic, copy) NSString* mainName;
-@property(nonatomic, assign) int number;
-@end
-@implementation MainModel
-@dynamic nameA, nameB, ar;
-+ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
-    [dic addEntriesFromDictionary:@{
-        @"number": @"main.num",
-        @"nameA": @"a"
-    }];
-    return dic;
-}
-@end
+@protocol TTestProtocol <NSObject>
 
-@protocol ModelC
-@property(nonatomic, copy) NSString* nameC;
-@end
-@interface ModelC : CBModel <ModelC>
+@property (nonatomic) SEL sell;
+@property (nonatomic) NSArray* ccc;
+@property (nonatomic) union uwd d;
+@property (nonatomic) long double lddd;
+@property (nonatomic) int* iii;
 
 @end
-@implementation ModelC
-@synthesize nameC;
-+ (NSDictionary<NSString *,id> *)modelCustomPropertyMapper {
-    NSMutableDictionary* dic = [NSMutableDictionary dictionaryWithDictionary:[super modelCustomPropertyMapper]];
-    [dic addEntriesFromDictionary:@{
-        @"nameC": @"c"
-    }];
-    return dic;
-}
-@end
 
-@interface MainModelEx : MainModel <ModelC>
+@interface TModel : CBModel
 
 @end
-@implementation MainModelEx
-@dynamic nameC;
+
+@implementation TModel
+
+@end
+
+@interface TModel (T) <TestProtocol>
+
+@end
+
+@implementation TModel (T)
+@dynamic type, ftype, str, k, cls;
+
+@end
+
+@interface TTModel : TModel <TTestProtocol>
+
+@end
+@implementation TTModel
+@dynamic sell, ccc, lddd, d, iii;
 
 @end
 
 @interface CBViewController ()
-@property(nonatomic, weak) id delegate;
+
 @end
 
 @implementation CBViewController
@@ -99,70 +74,48 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-	// Do any additional setup after loading the view, typically from a nib.
-    NSDictionary* json = @{
-        @"mainName": @"这是main的名字",
-        @"main": @{
-            @"num": @12345
-        },
-        @"a": @"这是a的名字",
-        @"b": @{
-            @"name": @"这是b的名字"
-        },
-        @"c": @"这是c的名字"
-    };
+    // Do any additional setup after loading the view, typically from a nib.
     
-    MainModel* m = nil;
+    TTModel* m = [TTModel new];
+    [m addObserver:self forKeyPath:@"type"
+           options:NSKeyValueObservingOptionNew
+           context:NULL];
+    union uwd vv;
+    vv.a[0] = 'a';
+    vv.a[1] = 'b';
+    m.d = vv;
+    m.ccc = @[@"a", @"b"];
+    m.cls = self.class;
+    m.sell = @selector(viewDidLoad);
+    m.type = 345;
+    m.str = @"哈哈哈";
+    m.ftype = 0.23;
+    m.k = (struct kkw){'c', 4};
+    m.lddd = 9992;
+    m.iii = (void*)0x02;
     
-    // 常规的属性转化
-    m = [MainModel yy_modelWithJSON:json];
-    NSLog(@"mainName: %@", m.mainName);
-    NSLog(@"number: %d", m.number);
-    
-    // 增加代理类ModelA代理对应协议的nameA属性
-    NSLog(@"nameA: %@", m.nameA);
-    
-    // 增加代理类ModelB代理对应协议的nameB属性
-    NSLog(@"nameB: %@", m.nameB);
-    
-    m = [[MainModel alloc] init];
-    NSString* s = [NSString stringWithFormat:@"%s_d", "23"];
-    @autoreleasepool {
-        NSArray* ar = @[@"1", @"2"];
-        m.ar = ar;
-        NSLog(@"%@", m.ar);
+    for (int i = 0; i < 3; i++) {
+        NSLog(@"%i, %c, %c", m.d.c, m.d.a[0], m.d.a[1]);
+        NSLog(@"%@", m.ccc);
+        NSLog(@"%@", m.cls);
+        NSLog(@"%@", NSStringFromSelector(m.sell));
+        NSLog(@"%ld", m.type);
+        NSLog(@"%@", m.str);
+        NSLog(@"%f", m.ftype);
+        NSLog(@"a: %c, d: %d", m.k.a, m.k.d);
+        NSLog(@"%Lf", m.lddd);
+        NSLog(@"0x%08x", m.iii);
     }
-    
-    NSLog(@"nameA: %@", s);
-    
-    self.delegate = nil;
-    
-    MainModelEx* mx = nil;
-    
-    // 增加代理类ModelC代理对应协议的nameC属性
-    NSMutableDictionary* dic = [NSMutableDictionary dictionary];
-    [dic addEntriesFromDictionary:ModelA.modelCustomPropertyMapper];
-    [dic addEntriesFromDictionary:ModelB.modelCustomPropertyMapper];
-    [dic addEntriesFromDictionary:MainModel.modelCustomPropertyMapper];
-    [dic addEntriesFromDictionary:ModelC.modelCustomPropertyMapper];
-    [dic addEntriesFromDictionary:MainModelEx.modelCustomPropertyMapper];
-    MainModelEx.modelCustomPropertyMapper = dic;
-    
-    mx = [MainModelEx yy_modelWithJSON:json];
-    NSLog(@"mainName: %@", mx.mainName);
-    NSLog(@"number: %d", mx.number);
-    NSLog(@"nameA: %@", mx.nameA);
-    NSLog(@"nameB: %@", mx.nameB);
-    NSLog(@"nameC: %@", mx.nameC);
+}
 
-    NSDictionary* _ = [mx yy_modelToJSONObject];
-    NSLog(@"%@", _);
-    
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if ([keyPath isEqualToString:@"type"]) {
+        NSLog(@"%@", change);
+    }
 }
 
 - (void)didReceiveMemoryWarning
 {
-    NSLog(@"delegate: %@", self.delegate);
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
 }

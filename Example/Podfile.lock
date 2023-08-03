@@ -1,17 +1,14 @@
 PODS:
-  - CBModel (0.1.1):
-    - YYModel (= 1.0.4)
+  - CBModel (0.1.0)
   - FBSnapshotTestCase (2.1.4):
     - FBSnapshotTestCase/SwiftSupport (= 2.1.4)
   - FBSnapshotTestCase/Core (2.1.4)
   - FBSnapshotTestCase/SwiftSupport (2.1.4):
     - FBSnapshotTestCase/Core
-  - YYModel (1.0.4)
 
 DEPENDENCIES:
   - CBModel (from `../`)
   - FBSnapshotTestCase
-  - YYModel (from `https://gitee.com/hidden_group/YYModel.git`, tag `1.0.4.ext`)
 
 SPEC REPOS:
   trunk:
@@ -20,20 +17,11 @@ SPEC REPOS:
 EXTERNAL SOURCES:
   CBModel:
     :path: "../"
-  YYModel:
-    :git: https://gitee.com/hidden_group/YYModel.git
-    :tag: 1.0.4.ext
-
-CHECKOUT OPTIONS:
-  YYModel:
-    :git: https://gitee.com/hidden_group/YYModel.git
-    :tag: 1.0.4.ext
 
 SPEC CHECKSUMS:
-  CBModel: 9c628e5b7f473da06568bf7543bb1e8e90faf92d
+  CBModel: 6b186d215182c9fb82423c47adb245a97d23a6bc
   FBSnapshotTestCase: 094f9f314decbabe373b87cc339bea235a63e07a
-  YYModel: 2a7fdd96aaa4b86a824e26d0c517de8928c04b30
 
-PODFILE CHECKSUM: f0140aa9761ea576e8bdc89e3e354815cb217285
+PODFILE CHECKSUM: ad3c67865d2a1db64e0a6ec281a357a1897e0c2a
 
-COCOAPODS: 1.11.3
+COCOAPODS: 1.12.1
