@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'CBModel'
-  s.version          = '1.0.0'
+  s.version          = '1.0.1'
   s.summary          = 'CBModel 为其子类在运行时动态绑定 getter 和 setter 的IMP.'
 
 # This description is used to generate tags and improve search results.
@@ -20,6 +20,8 @@ Pod::Spec.new do |s|
   s.description      = <<-DESC
 1. CBModel 的子类可以在Category中仅声明property，可交由 CBModel 在运行时动态添加缺省的getter 和 setter实现方法
 2. CBModel 的子类在声明遵从协议时，如果协议中带有property，那么也可交由 CBModel 在运行时动态添加缺省的getter 和 setter实现方法
+3. 已支持一下常用类型：
+   char, int, short, long, long long, unsigned char, unsigned int, unsigned short, unsigned long, unsigned long long, float, double, BOOL, Pointer(void* | chat* | int*), (id | NSObject*), Class, SEL, Array, Struct, Union
 限制：CBModel 只对 @dynamic 且 nonatomic 修饰的 property 动态添加 getter、setter 实现
                        DESC
 

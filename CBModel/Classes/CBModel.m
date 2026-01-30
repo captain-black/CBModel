@@ -117,6 +117,7 @@ IMP_FOR_TYPE(bool, bool);
  f：表示float类型
  d：表示double类型
  B：表示BOOL类型
+ ^：表示指针类型
  v：表示void类型
  *：表示char *类型（C字符串）
  @：表示对象类型（id类型），后面可以跟随一个字符串，表示对象的类名，例如@"NSString"表示NSString类对象
