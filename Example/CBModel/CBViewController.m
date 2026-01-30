@@ -2,71 +2,69 @@
 //  CBViewController.m
 //  CBModel
 //
-//  Created by Captain Black on 12/28/2022.
+//  Created by Captain Black on 08/09/2022.
 //  Copyright (c) 2022 Captain Black. All rights reserved.
 //
 
 #import "CBViewController.h"
 
+#import <YYModel/YYModel.h>
 #import <CBModel/CBModel.h>
 
-struct kkw {
-    char a;
-    short d;
-};
-
-union uwd {
-    char a[2];
-    short c;
-};
-
-@protocol TestProtocol <NSObject>
-
-@property (assign) long type;
-@property (nonatomic, assign) CGFloat ftype;
-@property (nonatomic) NSString* str;
-@property (nonatomic, assign) struct kkw k;
-@property (nonatomic) Class cls;
+@protocol ModelA <YYModel>
+@property(nonatomic, copy, setter=setAA:, getter=AA) NSString* nameA;
+@property(nonatomic, weak) NSArray* ar;
+@optional
+- (id)testMethod;
+@end
+@interface ModelA : CBModel
+@property(nonatomic, copy) NSString* nameA;
+@end
+@implementation ModelA
 
 @end
 
-@protocol TTestProtocol <NSObject>
+@protocol ModelB
+@property(nonatomic, copy) NSString* nameB;
+@end
+@interface ModelB : CBModel <ModelB>
 
-@property (nonatomic) SEL sell;
-@property (nonatomic) NSArray* ccc;
-@property (nonatomic) union uwd d;
-@property (nonatomic) long double lddd;
-@property (nonatomic) int* iii;
+@end
+@implementation ModelB
+@dynamic nameB;
 
 @end
 
-@interface TModel : CBModel
+@interface MainModel: CBModel <ModelA, ModelB>
+@property(nonatomic, copy) NSString* mainName;
+@property(nonatomic, assign) int number;
+@end
+@implementation MainModel
+@dynamic nameA, nameB, ar;
 
 @end
 
-@implementation TModel
+@protocol ModelC
+@property(nonatomic, copy) NSString* nameC;
+@property (nonatomic, assign) CGSize size;
+@end
+@interface ModelC : CBModel <ModelC>
 
 @end
-
-@interface TModel (T) <TestProtocol>
-
+@implementation ModelC
+@synthesize nameC, size;
 @end
 
-@implementation TModel (T)
-@dynamic type, ftype, str, k, cls;
+@interface MainModelEx : MainModel <ModelC>
 
 @end
-
-@interface TTModel : TModel <TTestProtocol>
-
-@end
-@implementation TTModel
-@dynamic sell, ccc, lddd, d, iii;
+@implementation MainModelEx
+@dynamic nameC, size;
 
 @end
 
 @interface CBViewController ()
-
+@property(nonatomic, weak) id delegate;
 @end
 
 @implementation CBViewController
@@ -74,48 +72,60 @@ union uwd {
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    // Do any additional setup after loading the view, typically from a nib.
+	// Do any additional setup after loading the view, typically from a nib.
+    NSDictionary* json = @{
+        @"mainName": @"这是main的名字",
+        @"number": @12345,
+        @"nameA": @"这是a的名字",
+        @"nameB": @"这是b的名字",
+        @"nameC": @"这是c的名字"
+    };
     
-    TTModel* m = [TTModel new];
-    [m addObserver:self forKeyPath:@"type"
-           options:NSKeyValueObservingOptionNew
-           context:NULL];
-    union uwd vv;
-    vv.a[0] = 'a';
-    vv.a[1] = 'b';
-    m.d = vv;
-    m.ccc = @[@"a", @"b"];
-    m.cls = self.class;
-    m.sell = @selector(viewDidLoad);
-    m.type = 345;
-    m.str = @"哈哈哈";
-    m.ftype = 0.23;
-    m.k = (struct kkw){'c', 4};
-    m.lddd = 9992;
-    m.iii = (void*)0x02;
+    MainModel* m = nil;
     
-    for (int i = 0; i < 3; i++) {
-        NSLog(@"%i, %c, %c", m.d.c, m.d.a[0], m.d.a[1]);
-        NSLog(@"%@", m.ccc);
-        NSLog(@"%@", m.cls);
-        NSLog(@"%@", NSStringFromSelector(m.sell));
-        NSLog(@"%ld", m.type);
-        NSLog(@"%@", m.str);
-        NSLog(@"%f", m.ftype);
-        NSLog(@"a: %c, d: %d", m.k.a, m.k.d);
-        NSLog(@"%Lf", m.lddd);
-        NSLog(@"0x%08x", m.iii);
+    // 常规的属性转化
+    m = [MainModel yy_modelWithJSON:json];
+    NSLog(@"mainName: %@", m.mainName);
+    NSLog(@"number: %d", m.number);
+    
+    // 增加代理类ModelA代理对应协议的nameA属性
+    NSLog(@"nameA: %@", m.nameA);
+    
+    // 增加代理类ModelB代理对应协议的nameB属性
+    NSLog(@"nameB: %@", m.nameB);
+    
+    m = [[MainModel alloc] init];
+    NSString* s = [NSString stringWithFormat:@"%s_d", "23"];
+    @autoreleasepool {
+        NSArray* ar = @[@"1", @"2"];
+        m.ar = ar;
+        NSLog(@"%@", m.ar);
     }
-}
+    
+    NSLog(@"nameA: %@", s);
+    
+    self.delegate = nil;
+    
+    MainModelEx* mx = nil;
+    
+    mx = [MainModelEx yy_modelWithJSON:json];
+    NSLog(@"mainName: %@", mx.mainName);
+    NSLog(@"number: %d", mx.number);
+    NSLog(@"nameA: %@", mx.nameA);
+    NSLog(@"nameB: %@", mx.nameB);
+    NSLog(@"nameC: %@", mx.nameC);
+    
+    mx.size = CGSizeMake(9, 11);
+    NSLog(@"%@", @(mx.size));
 
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    if ([keyPath isEqualToString:@"type"]) {
-        NSLog(@"%@", change);
-    }
+    NSDictionary* _ = [mx yy_modelToJSONObject];
+    NSLog(@"%@", _);
+    
 }
 
 - (void)didReceiveMemoryWarning
 {
+    NSLog(@"delegate: %@", self.delegate);
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
 }

@@ -2,8 +2,7 @@
 //  CBModel.m
 //  CBModel
 //
-//  Created by Captain Black on 12/28/2022.
-//  Copyright (c) 2022 Captain Black. All rights reserved.
+//  Created by Captain Black on 2023/7/14.
 //
 
 #import "CBModel.h"
@@ -28,82 +27,12 @@ static _TYPE_ _getter_for_##typeName##_(CBModel* self, SEL _cmd) {              
     }                                                                                   \
     return *(_TYPE_*)value;                                                             \
 }                                                                                       \
-                                                                                        \
+\
 static void _setter_for_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {          \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
     self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
 }
 
-static void* _getter_for_struct_(CBModel* self, SEL _cmd) {
-    NSString* p = [[self class] propNameForSel:_cmd];
-    NSMethodSignature* methodSignature = [self methodSignatureForSelector:_cmd];
-    
-    NSValue* value = self.sDynamicProperties[p];
-    unsigned char** retValue = alloca(methodSignature.methodReturnLength);
-    if (@available(iOS 11.0, *)) {
-        [value getValue:retValue size:methodSignature.methodReturnLength];
-    } else {
-        [value getValue:retValue];
-    }
-    return (void*)*retValue;
-}
-
-static void _setter_for_struct_(CBModel* self, SEL _cmd, void* value) {
-    NSString* p = [[self class] propNameForSel:_cmd];
-    
-    NSMethodSignature* methodSignature = [self methodSignatureForSelector:_cmd];
-    if (methodSignature.numberOfArguments > 2) {
-        NSValue* val = [NSValue value:&value withObjCType:[methodSignature getArgumentTypeAtIndex:2]];
-        self.sDynamicProperties[p] = val;
-    }
-}
-
-static void* _getter_for_union_(CBModel* self, SEL _cmd) {
-    NSString* p = [[self class] propNameForSel:_cmd];
-    Method m = class_getInstanceMethod([self class], _cmd);
-    
-    // !!!: [self methodSignatureForSelector:_cmd] 会报错，所以用运行时方式读取方法签名
-    struct objc_method_description* methodDesc = method_getDescription(m);
-    
-    const char* types = methodDesc->types;
-    NSUInteger retLen = 0;
-    const char* numStr = strrchr(types, ')');
-    if (numStr) {
-        sscanf(numStr+1, "%ld@", &retLen);
-    }
-    
-    retLen /= sizeof(void*);
-    
-    if (retLen) {
-        unsigned char** retValue = alloca(retLen);
-        
-        NSValue* value = self.sDynamicProperties[p];
-        
-        if (@available(iOS 11.0, *)) {
-            [value getValue:retValue size:retLen];
-        } else {
-            [value getValue:retValue];
-        }
-        
-        return (void*)*retValue;
-    }
-    
-    return NULL;
-}
-
-static void _setter_for_union_(CBModel* self, SEL _cmd, void* value) {
-    NSString* p = [[self class] propNameForSel:_cmd];
-    
-    // !!!: [self methodSignatureForSelector:_cmd] 会报错，所以用运行时方式读取方法签名
-    objc_property_t property = class_getProperty([self class], p.UTF8String);
-    char* attributeValue = property_copyAttributeValue(property, "T");
-    if (attributeValue) {
-        NSValue* val = [NSValue value:&value withObjCType:attributeValue];
-        self.sDynamicProperties[p] = val;
-        
-        free(attributeValue); attributeValue = NULL;
-    }
-}
 
 static id _getter_for_obj_strong_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
@@ -195,6 +124,8 @@ IMP_FOR_TYPE(bool, bool);
  :：表示方法选择器（SEL类型）
  [arrayType]：表示数组类型，其中arrayType是数组元素的编码类型，例如[NSString]表示NSString类型的数组
  {name=type}：表示结构体类型，其中name是结构体名称，type是结构体的编码类型，例如{CGPoint=dd}表示CGPoint结构体类型，包含两个double类型的成员变量
+ (name=type)：表示联合体类型，与结构体类似
+ 
  这些编码类型是通过Objective-C的运行时机制中的编码规则来定义的，用于描述类型信息。在编码类型中，可能会出现一些特殊符号和组合，用于表示更复杂的数据类型。
  
  需要注意的是，编码类型是基于C语言的类型系统，所以其中的一些标识符可能与C语言类型相对应。但是，在Objective-C中，编码类型可以更精确地表示对象类型、类类型、方法选择器等。
@@ -290,13 +221,21 @@ static IMP imp_for_property(BOOL isSetter, const char* propAttributes) {
         {
             return isSetter? (IMP)_setter_for_sel_ : (IMP)_getter_for_sel_;
         } break;
+            
+        /* 参数在压栈时是需要在编译期判断参数大小，大块数据类型超过了栈寄存器大小时，需要多寄存器联用，这需要编译期操作或者在汇编层面处理，
+         * 在OC无法用一个IMP适配全部情况，所以这里返回nil。在-forwardInvocation: 去判断实现
+         */
         case '{': // struct 结构体类型
         {
-            return isSetter? (IMP)_setter_for_struct_ : (IMP)_getter_for_struct_;
+            return nil;
         } break;
+        case '[': // array 数组
+        {
+            return nil;
+        }
         case '(': // union 联合体类型
         {
-            return isSetter? (IMP)_setter_for_union_ : (IMP)_getter_for_union_;
+            return nil;
         } break;
         default:
             break;
@@ -369,79 +308,177 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
     
     Class cls = self;
     NSString* targetSelName = NSStringFromSelector(sel);
-    
     do {
         uint propCount;
         objc_property_t *propList = class_copyPropertyList(cls, &propCount);
-        objc_property_t targetProp;
+        objc_property_t curProp;
         for (int j = 0; j < propCount; j++) {
-            targetProp = propList[j];
-            // 只动态添加dynamic修饰的属性
-            char* attrValue = property_copyAttributeValue(targetProp, "D");
-            free(attrValue); if (attrValue == NULL) { continue; } attrValue = NULL;
-            // 不支持atomic修饰的属性
-            attrValue = property_copyAttributeValue(targetProp, "N");
+            curProp = propList[j];
+            // 判断是不是动态属性，dynamic 修饰
+            char* attrValue = property_copyAttributeValue(curProp, "D");
             free(attrValue); if (attrValue == NULL) { continue; } attrValue = NULL;
             
-            const char* propName = property_getName(targetProp);
+            // 提取属性名
+            const char* propName = property_getName(curProp);
             NSString* targetPropName = [NSString stringWithUTF8String:propName];
-            // getter 1
-            NSString* getterName = [NSString stringWithFormat:@"%s", propName];
-            if ([targetSelName isEqualToString:getterName]) {
-                attrValue = property_copyAttributeValue(targetProp, "T");
-                const char* getterTypes = [NSString stringWithFormat:@"%s:", attrValue].UTF8String;
-                free(attrValue); attrValue = NULL;
-                // 动态添加方法实现
-                if (![cls propNameForSelector:getterName] &&
-                    getterTypes &&
-                    class_addMethod(cls, sel,
-                                    imp_for_property(NO, property_getAttributes(targetProp)), getterTypes)) {
-                    [cls setPropName:targetPropName
-                         forSelector:getterName];
-                    resolve = YES;
-                    break;
+            
+            { // getter处理
+                // 提取属性的getter方法名
+                NSString* propGetterName = nil; {
+                    attrValue = property_copyAttributeValue(curProp, "G");
+                    if (attrValue) {
+                        // 自定义的getter方法名
+                        propGetterName = [NSString stringWithFormat:@"%s", attrValue];
+                        free(attrValue); attrValue = NULL;
+                    } else {
+                        // 默认的getter方法名
+                        propGetterName = [NSString stringWithFormat:@"%s", propName];
+                    }
+                }
+                // 目标方法名跟当前属性的getter方法名一致，则动态添加方法
+                if ([targetSelName isEqualToString:propGetterName]) {
+                    attrValue = property_copyAttributeValue(curProp, "T");
+                    const char* getterTypes = [NSString stringWithFormat:@"%s:", attrValue].UTF8String;
+                    free(attrValue); attrValue = NULL;
+                    // 动态添加方法实现
+                    IMP impForProp = imp_for_property(NO, property_getAttributes(curProp));
+                    if (![cls propNameForSelector:propGetterName] &&
+                        getterTypes &&
+                        impForProp &&
+                        class_addMethod(cls, sel, impForProp, getterTypes)) {
+                        [cls setPropName:targetPropName
+                             forSelector:propGetterName];
+                        resolve = YES;
+                        break;
+                    }
                 }
             }
-            // getter 2
-            getterName = [NSString stringWithFormat:@"get%c%s", propName[0] & ~0x20, propName+1];
-            if ([targetSelName isEqualToString:getterName]) {
-                attrValue = property_copyAttributeValue(targetProp, "T");
-                const char* getterTypes = [NSString stringWithFormat:@"%s:", attrValue].UTF8String;
-                free(attrValue); attrValue = NULL;
-                // 动态添加方法实现
-                if (![cls propNameForSelector:getterName] &&
-                    getterTypes &&
-                    class_addMethod(cls, sel,
-                                    imp_for_property(NO, property_getAttributes(targetProp)), getterTypes)) {
-                    [cls setPropName:targetPropName
-                         forSelector:getterName];
-                    resolve = YES;
-                    break;
+            
+            { // setter处理
+                // 提取属性的setter方法名
+                NSString* propSetterName = nil; {
+                    attrValue = property_copyAttributeValue(curProp, "S");
+                    if (attrValue) {
+                        // 自定义的setter方法名
+                        propSetterName = [NSString stringWithFormat:@"%s", attrValue];
+                        free(attrValue); attrValue = NULL;
+                    }
+                    else {
+                        // 默认的setter方法名
+                        propSetterName = [NSString stringWithFormat:@"set%c%s:", propName[0] & ~0x20, propName+1];
+                    }
                 }
-            }
-            // setter
-            NSString* setterName = [NSString stringWithFormat:@"set%c%s:", propName[0] & ~0x20, propName+1];
-            if ([targetSelName isEqualToString:setterName]) {
-                attrValue = property_copyAttributeValue(targetProp, "T");
-                const char* setterTypes = [NSString stringWithFormat:@"v:%s:", attrValue].UTF8String;
-                free(attrValue); attrValue = NULL;
-                // 动态添加方法实现
-                if (![cls propNameForSelector:setterName] &&
-                    setterTypes &&
-                    class_addMethod(cls, sel,
-                                    imp_for_property(YES, property_getAttributes(targetProp)), setterTypes)) {
-                    [cls setPropName:targetPropName
-                         forSelector:setterName];
-                    resolve = YES;
-                    break;
+                // 目标方法名跟当前属性的setter方法名一致，则动态添加方法
+                if ([targetSelName isEqualToString:propSetterName]) {
+                    attrValue = property_copyAttributeValue(curProp, "T");
+                    const char* setterTypes = [NSString stringWithFormat:@"v:%s:", attrValue].UTF8String;
+                    free(attrValue); attrValue = NULL;
+                    // 动态添加方法实现
+                    IMP impForProp = imp_for_property(YES, property_getAttributes(curProp));
+                    if (![cls propNameForSelector:propSetterName] &&
+                        setterTypes &&
+                        impForProp &&
+                        class_addMethod(cls, sel, impForProp, setterTypes)) {
+                        [cls setPropName:targetPropName
+                             forSelector:propSetterName];
+                        resolve = YES;
+                        break;
+                    }
                 }
             }
         }
+        // 释放属性列表
         free(propList); propList = NULL;
         if (resolve) { return YES; }
     } while ((cls = [cls superclass]) != CBModel.class);
     
     return [super resolveInstanceMethod:sel];
+}
+
+- (void)forwardInvocation:(NSInvocation *)anInvocation {
+    BOOL resolve = NO;
+    
+    Class cls = self.class;
+    NSString* targetSelName = NSStringFromSelector(anInvocation.selector);
+    do {
+        uint propCount;
+        objc_property_t *propList = class_copyPropertyList(cls, &propCount);
+        objc_property_t curProp;
+        for (int j = 0; j < propCount; j++) {
+            curProp = propList[j];
+            // 判断是不是动态属性，dynamic 修饰
+            char* attrValue = property_copyAttributeValue(curProp, "D");
+            free(attrValue); if (attrValue == NULL) { continue; } attrValue = NULL;
+            
+            // 提取属性名
+            const char* propName = property_getName(curProp);
+            NSString* targetPropName = [NSString stringWithUTF8String:propName];
+            
+            { // getter处理
+                // 提取属性的getter方法名
+                NSString* propGetterName = nil; {
+                    attrValue = property_copyAttributeValue(curProp, "G");
+                    if (attrValue) {
+                        // 自定义的getter方法名
+                        propGetterName = [NSString stringWithFormat:@"%s", attrValue];
+                        free(attrValue); attrValue = NULL;
+                    } else {
+                        // 默认的getter方法名
+                        propGetterName = [NSString stringWithFormat:@"%s", propName];
+                    }
+                }
+                // 目标方法名跟当前属性的getter方法名一致
+                if ([targetSelName isEqualToString:propGetterName]) {
+                    NSUInteger retSize = anInvocation.methodSignature.methodReturnLength;
+                    NSValue* value = self.sDynamicProperties[targetPropName];
+                    if (value) {
+                        void* buff = alloca(retSize);
+                        memset(buff, 0, retSize);
+                        [value getValue:buff size:retSize];
+                        [anInvocation setReturnValue:buff];
+                        
+                        resolve = YES;
+                        break;
+                    }
+                }
+            }
+            
+            { // setter处理
+                // 提取属性的setter方法名
+                NSString* propSetterName = nil; {
+                    attrValue = property_copyAttributeValue(curProp, "S");
+                    if (attrValue) {
+                        // 自定义的setter方法名
+                        propSetterName = [NSString stringWithFormat:@"%s", attrValue];
+                        free(attrValue); attrValue = NULL;
+                    }
+                    else {
+                        // 默认的setter方法名
+                        propSetterName = [NSString stringWithFormat:@"set%c%s:", propName[0] & ~0x20, propName+1];
+                    }
+                }
+                // 目标方法名跟当前属性的setter方法名一致
+                if ([targetSelName isEqualToString:propSetterName]) {
+                    const char* argTypeCode = [anInvocation.methodSignature getArgumentTypeAtIndex:2];
+                    NSUInteger argSize = 0;
+                    NSGetSizeAndAlignment(argTypeCode, &argSize, NULL);
+                    void* buff = alloca(argSize);
+                    [anInvocation getArgument:buff atIndex:2];
+                    self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
+                    
+                    resolve = YES;
+                    break;
+                }
+            }
+        }
+        
+        // 释放属性列表
+        free(propList); propList = NULL;
+        if (resolve) { return; }
+    } while ((cls = [cls superclass]) != CBModel.class);
+    
+    // 以上逻辑都没有完成处理，那就交由父类的方法出处理
+    [super forwardInvocation:anInvocation];
 }
 
 @end

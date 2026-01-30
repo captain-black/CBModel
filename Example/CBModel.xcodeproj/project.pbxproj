@@ -369,10 +369,12 @@
 			inputPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-CBModel_Example/Pods-CBModel_Example-frameworks.sh",
 				"${BUILT_PRODUCTS_DIR}/CBModel/CBModel.framework",
+				"${BUILT_PRODUCTS_DIR}/YYModel/YYModel.framework",
 			);
 			name = "[CP] Embed Pods Frameworks";
 			outputPaths = (
 				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/CBModel.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/YYModel.framework",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -520,7 +522,7 @@
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = "CBModel/CBModel-Prefix.pch";
 				INFOPLIST_FILE = "CBModel/CBModel-Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11;
 				MODULE_NAME = ExampleApp;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kinkey.cbmodel;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -538,7 +540,7 @@
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = "CBModel/CBModel-Prefix.pch";
 				INFOPLIST_FILE = "CBModel/CBModel-Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 8.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 11;
 				MODULE_NAME = ExampleApp;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kinkey.cbmodel;
 				PRODUCT_NAME = "$(TARGET_NAME)";

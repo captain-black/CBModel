@@ -1,27 +1,31 @@
 PODS:
-  - CBModel (0.1.0)
+  - CBModel (1.0.0)
   - FBSnapshotTestCase (2.1.4):
     - FBSnapshotTestCase/SwiftSupport (= 2.1.4)
   - FBSnapshotTestCase/Core (2.1.4)
   - FBSnapshotTestCase/SwiftSupport (2.1.4):
     - FBSnapshotTestCase/Core
+  - YYModel (1.0.4)
 
 DEPENDENCIES:
   - CBModel (from `../`)
   - FBSnapshotTestCase
+  - YYModel
 
 SPEC REPOS:
   trunk:
     - FBSnapshotTestCase
+    - YYModel
 
 EXTERNAL SOURCES:
   CBModel:
     :path: "../"
 
 SPEC CHECKSUMS:
-  CBModel: 6b186d215182c9fb82423c47adb245a97d23a6bc
+  CBModel: eddb9ba2065adb723e374ea4179ebc8ce976f7a0
   FBSnapshotTestCase: 094f9f314decbabe373b87cc339bea235a63e07a
+  YYModel: 2a7fdd96aaa4b86a824e26d0c517de8928c04b30
 
-PODFILE CHECKSUM: ad3c67865d2a1db64e0a6ec281a357a1897e0c2a
+PODFILE CHECKSUM: 0927040588259d1636706743140bbc3519200ba4
 
-COCOAPODS: 1.12.1
+COCOAPODS: 1.16.2

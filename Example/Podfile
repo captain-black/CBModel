@@ -1,13 +1,24 @@
 use_frameworks!
 
-platform :ios, '10.0'
+platform :ios, '11.0'
 
 target 'CBModel_Example' do
   pod 'CBModel', :path => '../'
+  pod 'YYModel'
 
   target 'CBModel_Tests' do
     inherit! :search_paths
 
     pod 'FBSnapshotTestCase'
+  end
+end
+
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      # 将所有 Pod 库的最低支持版本改为 iOS 11.0
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '11.0'
+    end
   end
 end
