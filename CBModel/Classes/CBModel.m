@@ -13,6 +13,7 @@
 @interface CBModel ()
 + (NSString* _Nullable)propNameForSel:(SEL)sel;
 + (NSString* _Nullable)propNameForSelector:(NSString*)selectorName;
++ (NSLock*)lockForProperty:(NSString*)propName inInstance:(CBModel*)instance;
 @end
 
 #define IMP_FOR_TYPE(typeName, _TYPE_)                                                  \
@@ -101,6 +102,125 @@ IMP_FOR_TYPE(double, double);
 IMP_FOR_TYPE(longDouble, long double);
 IMP_FOR_TYPE(bool, bool);
 
+#define IMP_FOR_TYPE_ATOMIC(typeName, _TYPE_)                                           \
+static _TYPE_ _getter_for_atomic_##typeName##_(CBModel* self, SEL _cmd) {               \
+    NSString* p = [[self class] propNameForSel:_cmd];                                   \
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];                    \
+    [lock lock];                                                                        \
+    unsigned int size = sizeof(_TYPE_);                                                 \
+    void* value = alloca(size);                                                         \
+    if (@available(iOS 11.0, *)) {                                                      \
+        [self.sDynamicProperties[p] getValue:value size:size];                          \
+    } else {                                                                            \
+        [self.sDynamicProperties[p] getValue:value];                                    \
+    }                                                                                   \
+    [lock unlock];                                                                      \
+    return *(_TYPE_*)value;                                                             \
+}                                                                                       \
+\
+static void _setter_for_atomic_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {   \
+    NSString* p = [[self class] propNameForSel:_cmd];                                   \
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];                    \
+    [lock lock];                                                                        \
+    self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
+    [lock unlock];                                                                      \
+}
+
+IMP_FOR_TYPE_ATOMIC(char, char);
+IMP_FOR_TYPE_ATOMIC(short, short);
+IMP_FOR_TYPE_ATOMIC(int, int);
+IMP_FOR_TYPE_ATOMIC(long, long);
+IMP_FOR_TYPE_ATOMIC(longLong, long long);
+IMP_FOR_TYPE_ATOMIC(unsignedChar, unsigned char);
+IMP_FOR_TYPE_ATOMIC(unsignedInt, unsigned int);
+IMP_FOR_TYPE_ATOMIC(unsignedShort, unsigned short);
+IMP_FOR_TYPE_ATOMIC(unsignedLong, unsigned long);
+IMP_FOR_TYPE_ATOMIC(unsignedLongLong, unsigned long long);
+IMP_FOR_TYPE_ATOMIC(float, float);
+IMP_FOR_TYPE_ATOMIC(double, double);
+IMP_FOR_TYPE_ATOMIC(longDouble, long double);
+IMP_FOR_TYPE_ATOMIC(bool, bool);
+
+static id _getter_for_atomic_obj_strong_(CBModel* self, SEL _cmd) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    id value = self.sDynamicProperties[p];
+    [lock unlock];
+    return value;
+}
+
+static void _setter_for_atomic_obj_strong_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    self.sDynamicProperties[p] = value;
+    [lock unlock];
+}
+
+static void _setter_for_atomic_obj_copy_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    self.sDynamicProperties[p] = [value copy];
+    [lock unlock];
+}
+
+static id _getter_for_atomic_obj_weak_(CBModel* self, SEL _cmd) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    id value = [self.wDynamicProperties objectForKey:p];
+    [lock unlock];
+    return value;
+}
+
+static void _setter_for_atomic_obj_weak_(CBModel* self, SEL _cmd, id value) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    [self.wDynamicProperties setObject:value forKey:p];
+    [lock unlock];
+}
+
+static void* _getter_for_atomic_pointer_(CBModel* self, SEL _cmd) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    void* result = [val pointerValue];
+    [lock unlock];
+    return result;
+}
+
+static void _setter_for_atomic_pointer_(CBModel* self, SEL _cmd, const void* value) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    NSValue* val = [NSValue valueWithPointer:value];
+    [self.sDynamicProperties setObject:val forKey:p];
+    [lock unlock];
+}
+
+static void* _getter_for_atomic_sel_(CBModel* self, SEL _cmd) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    void* result = (__bridge void*)[val nonretainedObjectValue];
+    [lock unlock];
+    return result;
+}
+
+static void _setter_for_atomic_sel_(CBModel* self, SEL _cmd, __unsafe_unretained id value) {
+    NSString* p = [[self class] propNameForSel:_cmd];
+    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
+    [lock lock];
+    NSValue* val = [NSValue valueWithNonretainedObject:value];
+    [self.sDynamicProperties setObject:val forKey:p];
+    [lock unlock];
+}
+
 /*
  在Objective-C中，编码类型（encodingType）是用字符串表示的编码描述，用于标识属性、方法参数、返回类型等的数据类型。下面是一些常见的编码类型及其对应的含义：
  
@@ -133,68 +253,68 @@ IMP_FOR_TYPE(bool, bool);
  
  请注意，上述列表仅包含了一些常见的编码类型，而实际上还有更多的编码类型可以用于描述不同的数据类型。如果你需要详细的编码类型列表及其说明，可以参考苹果官方文档中关于Objective-C运行时机制的部分，其中有完整的编码类型规范和说明。
  //*/
-static IMP imp_for_property(BOOL isSetter, const char* propAttributes) {
+static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttributes) {
     char *typeEncoding = strchr(propAttributes, 'T');
     switch (*(typeEncoding+1)) {
         case 'c': // char
         {
-            return isSetter? (IMP)_setter_for_char_ : (IMP)_getter_for_char_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_char_ : (IMP)_setter_for_char_) : (isAtomic? (IMP)_getter_for_atomic_char_ : (IMP)_getter_for_char_);
         } break;
         case 'i': // int
         {
-            return isSetter? (IMP)_setter_for_int_ : (IMP)_getter_for_int_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_int_ : (IMP)_setter_for_int_) : (isAtomic? (IMP)_getter_for_atomic_int_ : (IMP)_getter_for_int_);
         } break;
         case 's': // short
         {
-            return isSetter? (IMP)_setter_for_short_ : (IMP)_getter_for_short_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_short_ : (IMP)_setter_for_short_) : (isAtomic? (IMP)_getter_for_atomic_short_ : (IMP)_getter_for_short_);
         } break;
         case 'l': // long
         {
-            return isSetter? (IMP)_setter_for_long_ : (IMP)_getter_for_long_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_long_ : (IMP)_setter_for_long_) : (isAtomic? (IMP)_getter_for_atomic_long_ : (IMP)_getter_for_long_);
         } break;
         case 'q': // long long
         {
-            return isSetter? (IMP)_setter_for_longLong_ : (IMP)_getter_for_longLong_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_longLong_ : (IMP)_setter_for_longLong_) : (isAtomic? (IMP)_getter_for_atomic_longLong_ : (IMP)_getter_for_longLong_);
         } break;
         case 'C': // unsigned char
         {
-            return isSetter? (IMP)_setter_for_unsignedChar_ : (IMP)_getter_for_unsignedChar_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_unsignedChar_ : (IMP)_setter_for_unsignedChar_) : (isAtomic? (IMP)_getter_for_atomic_unsignedChar_ : (IMP)_getter_for_unsignedChar_);
         } break;
         case 'I': // unsigned int
         {
-            return isSetter? (IMP)_setter_for_unsignedInt_ : (IMP)_getter_for_unsignedInt_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_unsignedInt_ : (IMP)_setter_for_unsignedInt_) : (isAtomic? (IMP)_getter_for_atomic_unsignedInt_ : (IMP)_getter_for_unsignedInt_);
         } break;
         case 'S': // unsigned short
         {
-            return isSetter? (IMP)_setter_for_unsignedShort_ : (IMP)_getter_for_unsignedShort_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_unsignedShort_ : (IMP)_setter_for_unsignedShort_) : (isAtomic? (IMP)_getter_for_atomic_unsignedShort_ : (IMP)_getter_for_unsignedShort_);
         } break;
         case 'L': // unsigned long
         {
-            return isSetter? (IMP)_setter_for_unsignedLong_ : (IMP)_getter_for_unsignedLong_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_unsignedLong_ : (IMP)_setter_for_unsignedLong_) : (isAtomic? (IMP)_getter_for_atomic_unsignedLong_ : (IMP)_getter_for_unsignedLong_);
         } break;
         case 'Q': // unsigned long long
         {
-            return isSetter? (IMP)_setter_for_unsignedLongLong_ : (IMP)_getter_for_unsignedLongLong_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_unsignedLongLong_ : (IMP)_setter_for_unsignedLongLong_) : (isAtomic? (IMP)_getter_for_atomic_unsignedLongLong_ : (IMP)_getter_for_unsignedLongLong_);
         } break;
         case 'f': // float
         {
-            return isSetter? (IMP)_setter_for_float_ : (IMP)_getter_for_float_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_float_ : (IMP)_setter_for_float_) : (isAtomic? (IMP)_getter_for_atomic_float_ : (IMP)_getter_for_float_);
         } break;
         case 'd': // double
         {
-            return isSetter? (IMP)_setter_for_double_ : (IMP)_getter_for_double_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_double_ : (IMP)_setter_for_double_) : (isAtomic? (IMP)_getter_for_atomic_double_ : (IMP)_getter_for_double_);
         } break;
         case 'D': // long double
         {
-            return isSetter? (IMP)_setter_for_longDouble_ : (IMP)_getter_for_longDouble_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_longDouble_ : (IMP)_setter_for_longDouble_) : (isAtomic? (IMP)_getter_for_atomic_longDouble_ : (IMP)_getter_for_longDouble_);
         } break;
         case 'B': // BOOL
         {
-            return isSetter? (IMP)_setter_for_bool_ : (IMP)_getter_for_bool_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_bool_ : (IMP)_setter_for_bool_) : (isAtomic? (IMP)_getter_for_atomic_bool_ : (IMP)_getter_for_bool_);
         } break;
         case '^': // Pointer
         {
-            return isSetter? (IMP)_setter_for_pointer_ : (IMP)_getter_for_pointer_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_pointer_ : (IMP)_setter_for_pointer_) : (isAtomic? (IMP)_getter_for_atomic_pointer_ : (IMP)_getter_for_pointer_);
         } break;
         case '@': // NSObject
         case '#': // class，class本质上也是一个NSObject，所以getter、setter可以共用
@@ -203,24 +323,24 @@ static IMP imp_for_property(BOOL isSetter, const char* propAttributes) {
             // OC 对象属性还要区分不同的引用类型
             if ((attr = strstr(strchr(typeEncoding, ','), ",C"))) // copy
             {
-                return isSetter? (IMP)_setter_for_obj_copy_ : (IMP)_getter_for_obj_strong_;
+                return isSetter? (isAtomic? (IMP)_setter_for_atomic_obj_copy_ : (IMP)_setter_for_obj_copy_) : (isAtomic? (IMP)_getter_for_atomic_obj_strong_ : (IMP)_getter_for_obj_strong_);
             }
             else if ((attr = strstr(strchr(typeEncoding, ','), ",&"))) // strong/retain
             {
-                return isSetter? (IMP)_setter_for_obj_strong_ : (IMP)_getter_for_obj_strong_;
+                return isSetter? (isAtomic? (IMP)_setter_for_atomic_obj_strong_ : (IMP)_setter_for_obj_strong_) : (isAtomic? (IMP)_getter_for_atomic_obj_strong_ : (IMP)_getter_for_obj_strong_);
             }
             else if ((attr = strstr(strchr(typeEncoding, ','), ",W"))) // weak
             {
-                return isSetter? (IMP)_setter_for_obj_weak_ : (IMP)_getter_for_obj_weak_;
+                return isSetter? (isAtomic? (IMP)_setter_for_atomic_obj_weak_ : (IMP)_setter_for_obj_weak_) : (isAtomic? (IMP)_getter_for_atomic_obj_weak_ : (IMP)_getter_for_obj_weak_);
             }
             else // 没有指明就使用 strong
             {
-                return isSetter? (IMP)_setter_for_obj_strong_ : (IMP)_getter_for_obj_strong_;
+                return isSetter? (isAtomic? (IMP)_setter_for_atomic_obj_strong_ : (IMP)_setter_for_obj_strong_) : (isAtomic? (IMP)_getter_for_atomic_obj_strong_ : (IMP)_getter_for_obj_strong_);
             }
         } break;
         case ':': // SEL，selector，本质上是一个结构体指针
         {
-            return isSetter? (IMP)_setter_for_sel_ : (IMP)_getter_for_sel_;
+            return isSetter? (isAtomic? (IMP)_setter_for_atomic_sel_ : (IMP)_setter_for_sel_) : (isAtomic? (IMP)_getter_for_atomic_sel_ : (IMP)_getter_for_sel_);
         } break;
             
         /* 参数在压栈时是需要在编译期判断参数大小，大块数据类型超过了栈寄存器大小时，需要多寄存器联用，这需要编译期操作或者在汇编层面处理，
@@ -298,6 +418,26 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
     return _wDynamicProperties;
 }
 
+@synthesize propertyLocks = _propertyLocks;
+/// 属性锁映射表
+- (NSMutableDictionary<NSString*, NSLock*> *)propertyLocks {
+    if (_propertyLocks == nil) {
+        _propertyLocks = [NSMutableDictionary dictionary];
+    }
+    return _propertyLocks;
+}
+
+#pragma mark - 锁管理
++ (NSLock*)lockForProperty:(NSString*)propName inInstance:(CBModel*)instance {
+    NSMutableDictionary* locks = instance.propertyLocks;
+    NSLock* lock = locks[propName];
+    if (lock == nil) {
+        lock = [[NSLock alloc] init];
+        locks[propName] = lock;
+    }
+    return lock;
+}
+
 #pragma mark - 动态实现方法
 + (BOOL)resolveInstanceMethod:(SEL)sel {
     
@@ -341,8 +481,13 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                     attrValue = property_copyAttributeValue(curProp, "T");
                     const char* getterTypes = [NSString stringWithFormat:@"%s:", attrValue].UTF8String;
                     free(attrValue); attrValue = NULL;
+                    
+                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
+                    const char* propAttrs = property_getAttributes(curProp);
+                    BOOL isAtomic = (strchr(propAttrs, 'N') == NULL);
+                    
                     // 动态添加方法实现
-                    IMP impForProp = imp_for_property(NO, property_getAttributes(curProp));
+                    IMP impForProp = imp_for_property(NO, isAtomic, propAttrs);
                     if (![cls propNameForSelector:propGetterName] &&
                         getterTypes &&
                         impForProp &&
@@ -374,8 +519,13 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                     attrValue = property_copyAttributeValue(curProp, "T");
                     const char* setterTypes = [NSString stringWithFormat:@"v:%s:", attrValue].UTF8String;
                     free(attrValue); attrValue = NULL;
+                    
+                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
+                    const char* propAttrs = property_getAttributes(curProp);
+                    BOOL isAtomic = (strchr(propAttrs, 'N') == NULL);
+                    
                     // 动态添加方法实现
-                    IMP impForProp = imp_for_property(YES, property_getAttributes(curProp));
+                    IMP impForProp = imp_for_property(YES, isAtomic, propAttrs);
                     if (![cls propNameForSelector:propSetterName] &&
                         setterTypes &&
                         impForProp &&
@@ -430,14 +580,35 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                 }
                 // 目标方法名跟当前属性的getter方法名一致
                 if ([targetSelName isEqualToString:propGetterName]) {
+                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
+                    const char* propAttrs = property_getAttributes(curProp);
+                    BOOL isAtomic = (strchr(propAttrs, 'N') == NULL);
+                    
                     NSUInteger retSize = anInvocation.methodSignature.methodReturnLength;
-                    NSValue* value = self.sDynamicProperties[targetPropName];
-                    if (value) {
-                        void* buff = alloca(retSize);
-                        memset(buff, 0, retSize);
-                        [value getValue:buff size:retSize];
-                        [anInvocation setReturnValue:buff];
-                        
+                    
+                    if (isAtomic) {
+                        // atomic 属性需要加锁
+                        NSLock* lock = [[self class] lockForProperty:targetPropName inInstance:self];
+                        [lock lock];
+                        NSValue* value = self.sDynamicProperties[targetPropName];
+                        if (value) {
+                            void* buff = alloca(retSize);
+                            memset(buff, 0, retSize);
+                            [value getValue:buff size:retSize];
+                            [anInvocation setReturnValue:buff];
+                        }
+                        [lock unlock];
+                        resolve = YES;
+                        break;
+                    } else {
+                        // nonatomic 属性无需加锁
+                        NSValue* value = self.sDynamicProperties[targetPropName];
+                        if (value) {
+                            void* buff = alloca(retSize);
+                            memset(buff, 0, retSize);
+                            [value getValue:buff size:retSize];
+                            [anInvocation setReturnValue:buff];
+                        }
                         resolve = YES;
                         break;
                     }
@@ -460,12 +631,26 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                 }
                 // 目标方法名跟当前属性的setter方法名一致
                 if ([targetSelName isEqualToString:propSetterName]) {
+                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
+                    const char* propAttrs = property_getAttributes(curProp);
+                    BOOL isAtomic = (strchr(propAttrs, 'N') == NULL);
+                    
                     const char* argTypeCode = [anInvocation.methodSignature getArgumentTypeAtIndex:2];
                     NSUInteger argSize = 0;
                     NSGetSizeAndAlignment(argTypeCode, &argSize, NULL);
                     void* buff = alloca(argSize);
                     [anInvocation getArgument:buff atIndex:2];
-                    self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
+                    
+                    if (isAtomic) {
+                        // atomic 属性需要加锁
+                        NSLock* lock = [[self class] lockForProperty:targetPropName inInstance:self];
+                        [lock lock];
+                        self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
+                        [lock unlock];
+                    } else {
+                        // nonatomic 属性无需加锁
+                        self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
+                    }
                     
                     resolve = YES;
                     break;

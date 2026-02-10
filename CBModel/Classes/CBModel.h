@@ -11,14 +11,14 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /// 自动映射 property 的getter、setter实现
-/// !!!: 目前不支持atomic修饰符的原子性同步锁功能
 ///
 /// 已支持一下常用类型：
 /// char, int, short, long, long long, unsigned char, unsigned int, unsigned short, unsigned long, unsigned long long, float, double, BOOL, Pointer(void* | chat* | int*), (id | NSObject*), Class, SEL, Array, Struct, Union
 
 @interface CBModel : NSObject
-@property(nonatomic, readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;// 存放强引用的动态属性
-@property(nonatomic, readonly) NSMapTable<NSString*, id>* wDynamicProperties;// 存放弱引用的动态属性
+@property(nonatomic, readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;
+@property(nonatomic, readonly) NSMapTable<NSString*, id>* wDynamicProperties;
+@property(nonatomic, readonly) NSMutableDictionary<NSString*, NSLock*>* propertyLocks;
 @end
 
 NS_ASSUME_NONNULL_END
