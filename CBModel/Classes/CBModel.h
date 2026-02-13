@@ -14,11 +14,12 @@ NS_ASSUME_NONNULL_BEGIN
 ///
 /// 已支持一下常用类型：
 /// char, int, short, long, long long, unsigned char, unsigned int, unsigned short, unsigned long, unsigned long long, float, double, BOOL, Pointer(void* | chat* | int*), (id | NSObject*), Class, SEL, Array, Struct, Union
-
-@interface CBModel : NSObject
-@property(nonatomic, readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;
-@property(nonatomic, readonly) NSMapTable<NSString*, id>* wDynamicProperties;
-@property(nonatomic, readonly) NSMutableDictionary<NSString*, NSLock*>* propertyLocks;
+/// - 支持原子性 atomic
+/// - 支持KVC、KVO
+@interface CBModel : NSObject <NSCoding, NSCopying>
+@property(readonly) NSMutableDictionary<NSString*, id>* sDynamicProperties;
+@property(readonly) NSMapTable<NSString*, id>* wDynamicProperties;
+@property(readonly) NSMutableDictionary<NSString*, NSLock*>* propertyLocks;
 @end
 
 NS_ASSUME_NONNULL_END

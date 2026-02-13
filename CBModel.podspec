@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'CBModel'
-  s.version          = '1.1.0'
+  s.version          = '1.2.0'
   s.summary          = 'CBModel 为其子类在运行时动态绑定 getter 和 setter 的IMP.'
 
 # This description is used to generate tags and improve search results.
@@ -23,6 +23,7 @@ Pod::Spec.new do |s|
 3. 已支持一下常用类型：
    char, int, short, long, long long, unsigned char, unsigned int, unsigned short, unsigned long, unsigned long long, float, double, BOOL, Pointer(void* | chat* | int*), (id | NSObject*), Class, SEL, Array, Struct, Union
 4. 支持 atomic 和 nonatomic 修饰符，atomic 属性使用 NSLock 保证线程安全
+5. 支持 KVC、KVO
 限制：CBModel 只对 @dynamic 修饰的 property 动态添加 getter、setter 实现
                        DESC
 
