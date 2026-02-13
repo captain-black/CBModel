@@ -435,7 +435,7 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
                     case 'B': retValue = @(*(BOOL*)buffer); break;
                     default:
                         /* 对于指针、数组、结构体、联合体等复杂类型，无法直接用 NSNumber 装箱，
-                         * 这里直接把入参 id 值当对象指针传进去，由调用端保证类型匹配。
+                         * 这里直接把value传递出去，由调用端保证类型匹配。
                          * 若实际类型不符，运行期会崩溃，属于调用者责任。 */
                         retValue = v;
                 }
@@ -492,6 +492,9 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
                     }
                     case 'B': { BOOL arg = [value boolValue];     [inv setArgument:&arg atIndex:2]; break; }
                     default: {
+                        /* 对于指针、数组、结构体、联合体等复杂类型，无法直接用 NSNumber 装箱，
+                         * 这里直接把入参 id 值当对象指针传进去，由调用端保证类型匹配。
+                         * 若实际类型不符，运行期会崩溃，属于调用者责任。 */
                         [inv setArgument:&value atIndex:2];
                         break;
                     }
