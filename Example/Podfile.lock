@@ -1,5 +1,5 @@
 PODS:
-  - CBModel (1.1.0)
+  - CBModel (1.2.0)
   - FBSnapshotTestCase (2.1.4):
     - FBSnapshotTestCase/SwiftSupport (= 2.1.4)
   - FBSnapshotTestCase/Core (2.1.4)
@@ -22,10 +22,10 @@ EXTERNAL SOURCES:
     :path: "../"
 
 SPEC CHECKSUMS:
-  CBModel: 70149bddce8bf4311813954e87f2caa7b468b856
+  CBModel: f4536b70b7d5dc4eb9486075121b85422c1f4cb2
   FBSnapshotTestCase: 094f9f314decbabe373b87cc339bea235a63e07a
   YYModel: 2a7fdd96aaa4b86a824e26d0c517de8928c04b30
 
-PODFILE CHECKSUM: fdd9e2cbec16ce34ee8f616adf720638175e42ff
+PODFILE CHECKSUM: a8521c983bafad0d9fd25a1e60d790bdfa50aff6
 
 COCOAPODS: 1.16.2

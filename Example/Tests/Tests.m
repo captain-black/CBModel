@@ -8,6 +8,8 @@
 
 @import XCTest;
 #import "TestModel.h"
+#import "YYTestModel.h"
+@import YYModel;
 
 @interface Tests : XCTestCase
 @property (nonatomic, assign) BOOL kvoObserverCalled;
@@ -318,40 +320,6 @@
     [model removeObserver:self forKeyPath:@"atomicIntValue"];
 }
 
-#pragma mark - NSCoding 测试
-
-- (void)testNSCoding {
-    TestModel *model = [[TestModel alloc] init];
-    model.intValue = 42;
-    model.strongString = @"测试字符串";
-    model.boolValue = YES;
-    
-    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:model];
-    XCTAssertNotNil(data, @"NSCoding 应该能编码模型");
-    
-    TestModel *decodedModel = [NSKeyedUnarchiver unarchiveObjectWithData:data];
-    XCTAssertNotNil(decodedModel, @"NSCoding 应该能解码模型");
-    XCTAssertEqual(decodedModel.intValue, 42, @"解码后的 int 值应该匹配");
-    XCTAssertEqualObjects(decodedModel.strongString, @"测试字符串", @"解码后的 string 值应该匹配");
-    XCTAssertEqual(decodedModel.boolValue, YES, @"解码后的 bool 值应该匹配");
-}
-
-#pragma mark - NSCopying 测试
-
-- (void)testNSCopying {
-    TestModel *model = [[TestModel alloc] init];
-    model.intValue = 100;
-    model.strongString = @"原始值";
-    
-    TestModel *copyModel = [model copy];
-    XCTAssertNotNil(copyModel, @"复制对象不应该为 nil");
-    XCTAssertEqual(copyModel.intValue, 100, @"复制后的 int 值应该匹配");
-    XCTAssertEqualObjects(copyModel.strongString, @"原始值", @"复制后的 string 值应该匹配");
-    
-    copyModel.intValue = 200;
-    XCTAssertNotEqual(model.intValue, copyModel.intValue, @"修改复制对象不应该影响原对象");
-}
-
 #pragma mark - Description 测试
 
 - (void)testDescription {
@@ -364,6 +332,347 @@
     XCTAssertTrue([desc containsString:@"TestModel"], @"description 应该包含类名");
     XCTAssertTrue([desc containsString:@"intValue"], @"description 应该包含属性名");
     XCTAssertTrue([desc containsString:@"42"], @"description 应该包含属性值");
+}
+
+#pragma mark - YYModel 兼容性测试
+
+- (void)testYYModelBasicJSONToModel {
+    NSDictionary *json = @{
+        @"name": @"张三",
+        @"age": @25,
+        @"isMale": @YES,
+        @"height": @1.75,
+        @"weight": @68.5
+    };
+    
+    YYBasicModel *model = [YYBasicModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"JSON 转模型应该成功");
+    XCTAssertEqualObjects(model.name, @"张三", @"name 属性应该正确解析");
+    XCTAssertEqual(model.age, 25, @"age 属性应该正确解析");
+    XCTAssertTrue(model.isMale, @"isMale 属性应该正确解析");
+    XCTAssertEqualWithAccuracy(model.height, 1.75, 0.01, @"height 属性应该正确解析");
+    XCTAssertEqualWithAccuracy(model.weight, 68.5, 0.1, @"weight 属性应该正确解析");
+}
+
+- (void)testYYModelModelToJSON {
+    YYBasicModel *model = [[YYBasicModel alloc] init];
+    model.name = @"李四";
+    model.age = 30;
+    model.isMale = NO;
+    model.height = 1.68;
+    model.weight = 55.0;
+    
+    NSDictionary *json = [model yy_modelToJSONObject];
+    
+    XCTAssertNotNil(json, @"模型转 JSON 应该成功");
+    XCTAssertEqualObjects(json[@"name"], @"李四", @"name 应该正确转换");
+    XCTAssertEqualObjects(json[@"age"], @30, @"age 应该正确转换");
+    XCTAssertEqualObjects(json[@"isMale"], @NO, @"isMale 应该正确转换");
+}
+
+- (void)testYYModelPropertyMapper {
+    NSDictionary *json = @{
+        @"id": @"user_001",
+        @"name": @"王五",
+        @"age": @28
+    };
+    
+    YYMappingModel *model = [YYMappingModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"自定义属性名映射应该成功");
+    XCTAssertEqualObjects(model.userId, @"user_001", @"userId 应该从 id 映射");
+    XCTAssertEqualObjects(model.userName, @"王五", @"userName 应该从 name 映射");
+    XCTAssertEqual(model.userAge, 28, @"userAge 应该从 age 映射");
+}
+
+- (void)testYYModelNestedModel {
+    NSDictionary *json = @{
+        @"name": @"赵六",
+        @"address": @{
+            @"city": @"北京",
+            @"street": @"长安街",
+            @"zipCode": @100000
+        }
+    };
+    
+    YYUserModel *model = [YYUserModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"嵌套模型解析应该成功");
+    XCTAssertEqualObjects(model.name, @"赵六", @"name 应该正确解析");
+    XCTAssertNotNil(model.address, @"address 应该正确解析");
+    XCTAssertTrue([model.address isKindOfClass:[YYAddressModel class]], @"address 应该是 YYAddressModel 类型");
+    XCTAssertEqualObjects(model.address.city, @"北京", @"city 应该正确解析");
+    XCTAssertEqualObjects(model.address.street, @"长安街", @"street 应该正确解析");
+    XCTAssertEqual(model.address.zipCode, 100000, @"zipCode 应该正确解析");
+}
+
+- (void)testYYModelContainerStringArray {
+    NSDictionary *json = @{
+        @"stringArray": @[@"one", @"two", @"three"]
+    };
+    
+    YYContainerModel *model = [YYContainerModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"容器模型解析应该成功");
+    XCTAssertNotNil(model.stringArray, @"stringArray 应该正确解析");
+    XCTAssertEqual(model.stringArray.count, 3, @"stringArray 应该有 3 个元素");
+    XCTAssertEqualObjects(model.stringArray[0], @"one", @"第一个元素应该是 one");
+}
+
+- (void)testYYModelContainerModelArray {
+    NSDictionary *json = @{
+        @"modelArray": @[
+            @{@"name": @"A", @"age": @10},
+            @{@"name": @"B", @"age": @20}
+        ]
+    };
+    
+    YYContainerModel *model = [YYContainerModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"容器模型解析应该成功");
+    XCTAssertNotNil(model.modelArray, @"modelArray 应该正确解析");
+    XCTAssertEqual(model.modelArray.count, 2, @"modelArray 应该有 2 个元素");
+    
+    YYBasicModel *firstModel = model.modelArray[0];
+    XCTAssertTrue([firstModel isKindOfClass:[YYBasicModel class]], @"元素应该是 YYBasicModel 类型");
+    XCTAssertEqualObjects(firstModel.name, @"A", @"第一个模型 name 应该是 A");
+    XCTAssertEqual(firstModel.age, 10, @"第一个模型 age 应该是 10");
+}
+
+- (void)testYYModelContainerModelDict {
+    NSDictionary *json = @{
+        @"modelDict": @{
+            @"user1": @{@"name": @"张三", @"age": @25},
+            @"user2": @{@"name": @"李四", @"age": @30}
+        }
+    };
+    
+    YYContainerModel *model = [YYContainerModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"容器模型解析应该成功");
+    XCTAssertNotNil(model.modelDict, @"modelDict 应该正确解析");
+    XCTAssertEqual(model.modelDict.count, 2, @"modelDict 应该有 2 个元素");
+    
+    YYBasicModel *user1 = model.modelDict[@"user1"];
+    XCTAssertTrue([user1 isKindOfClass:[YYBasicModel class]], @"值应该是 YYBasicModel 类型");
+    XCTAssertEqualObjects(user1.name, @"张三", @"user1 name 应该是张三");
+}
+
+- (void)testYYModelDynamicProperty {
+    YYDynamicModel *model = [[YYDynamicModel alloc] init];
+    model.staticName = @"静态属性";
+    
+    NSDictionary *json = [model yy_modelToJSONObject];
+    XCTAssertNotNil(json, @"动态属性模型转 JSON 应该成功");
+    XCTAssertEqualObjects(json[@"staticName"], @"静态属性", @"staticName 应该正确转换");
+    
+    NSDictionary *inputJson = @{@"staticName": @"新的静态值"};
+    YYDynamicModel *newModel = [YYDynamicModel yy_modelWithJSON:inputJson];
+    XCTAssertEqualObjects(newModel.staticName, @"新的静态值", @"从 JSON 解析 staticName 应该成功");
+}
+
+- (void)testYYModelProtocolCombination {
+    NSDictionary *json = @{
+        @"realName": @"真实姓名",
+        @"nickName": @"昵称",
+        @"score": @100
+    };
+    
+    YYProtocolModel *model = [YYProtocolModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"协议组合模型解析应该成功");
+    XCTAssertEqualObjects(model.realName, @"真实姓名", @"realName 应该正确解析");
+    XCTAssertEqualObjects(model.nickName, @"昵称", @"nickName 动态属性应该正确解析");
+    XCTAssertEqual(model.score, 100, @"score 动态属性应该正确解析");
+}
+
+- (void)testYYModelCallbackMethods {
+    NSDictionary *json = @{
+        @"name": @"测试用户",
+        @"age": @-5
+    };
+    
+    YYCallbackModel *model = [YYCallbackModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"回调模型解析应该成功");
+    XCTAssertTrue(model.didCustomize, @"modelCustomTransformFromDictionary: 应该被调用");
+    XCTAssertEqual(model.age, 0, @"负数 age 应该在回调中被修正为 0");
+    
+    NSDictionary *outputJson = [model yy_modelToJSONObject];
+    XCTAssertTrue(model.willConvert, @"modelCustomTransformToDictionary: 应该被调用");
+    XCTAssertNotNil(outputJson, @"转换后的 JSON 不应该为 nil");
+}
+
+- (void)testYYModelComplexTypes {
+    NSDictionary *json = @{
+        @"charValue": @(65),
+        @"shortValue": @(1000),
+        @"longValue": @(123456789),
+        @"llValue": @(9876543210LL),
+        @"uintValue": @(999),
+        @"ullValue": @(1234567890123ULL),
+        @"sizeValue": NSStringFromCGSize(CGSizeMake(100, 200)),
+        @"rectValue": NSStringFromCGRect(CGRectMake(10, 20, 100, 200)),
+        @"pointValue": NSStringFromCGPoint(CGPointMake(50, 60))
+    };
+    
+    YYComplexModel *model = [YYComplexModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"复杂类型模型解析应该成功");
+    XCTAssertEqual(model.charValue, 65, @"charValue 应该正确解析");
+    XCTAssertEqual(model.shortValue, 1000, @"shortValue 应该正确解析");
+    XCTAssertEqual(model.longValue, 123456789, @"longValue 应该正确解析");
+    XCTAssertEqual(model.llValue, 9876543210LL, @"llValue 应该正确解析");
+}
+
+- (void)testYYModelIgnoreProperties {
+    YYIgnoreModel *model = [[YYIgnoreModel alloc] init];
+    model.name = @"用户名";
+    model.password = @"密码123";
+    model.internalId = 999;
+    
+    NSDictionary *json = [model yy_modelToJSONObject];
+    
+    XCTAssertNotNil(json, @"忽略属性模型转 JSON 应该成功");
+    XCTAssertEqualObjects(json[@"name"], @"用户名", @"name 应该被转换");
+    XCTAssertNil(json[@"password"], @"password 应该被忽略");
+    XCTAssertNil(json[@"internalId"], @"internalId 应该被忽略");
+}
+
+- (void)testYYModelWithInvalidJSON {
+    NSDictionary *json = @{
+        @"name": @"测试",
+        @"age": @"不是数字"
+    };
+    
+    YYBasicModel *model = [YYBasicModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"即使 JSON 类型不匹配，模型也应该创建成功");
+    XCTAssertEqualObjects(model.name, @"测试", @"name 应该正确解析");
+}
+
+- (void)testYYModelWithEmptyJSON {
+    NSDictionary *json = @{};
+    
+    YYBasicModel *model = [YYBasicModel yy_modelWithJSON:json];
+    
+    XCTAssertNotNil(model, @"空 JSON 应该创建一个有效的模型");
+    XCTAssertNil(model.name, @"name 应该为 nil");
+    XCTAssertEqual(model.age, 0, @"age 应该为默认值 0");
+}
+
+- (void)testYYModelWithNilJSON {
+    YYBasicModel *model = [YYBasicModel yy_modelWithJSON:nil];
+    
+    XCTAssertNil(model, @"用nil JSON 创建模型是直接返回 nil");
+}
+
+- (void)testYYModelPerformance {
+    NSDictionary *json = @{
+        @"name": @"性能测试",
+        @"age": @25,
+        @"isMale": @YES,
+        @"height": @1.75,
+        @"weight": @68.5
+    };
+    
+    [self measureBlock:^{
+        for (int i = 0; i < 1000; i++) {
+            YYBasicModel *model = [YYBasicModel yy_modelWithJSON:json];
+            (void)model;
+        }
+    }];
+}
+
+- (void)testYYModelCopyWithYYModel {
+    YYBasicModel *model = [[YYBasicModel alloc] init];
+    model.name = @"原始模型";
+    model.age = 25;
+    
+    YYBasicModel *copiedModel = [model yy_modelCopy];
+    
+    XCTAssertNotNil(copiedModel, @"YYModel 复制应该成功");
+    XCTAssertEqualObjects(copiedModel.name, model.name, @"复制的 name 应该相同");
+    XCTAssertEqual(copiedModel.age, model.age, @"复制的 age 应该相同");
+    
+    copiedModel.name = @"修改后的名称";
+    XCTAssertNotEqualObjects(model.name, copiedModel.name, @"修改复制模型不应该影响原模型");
+}
+
+- (void)testYYModelDescriptionMethod {
+    YYBasicModel *model = [[YYBasicModel alloc] init];
+    model.name = @"描述测试";
+    model.age = 30;
+    
+    NSString *desc = [model yy_modelDescription];
+    
+    XCTAssertNotNil(desc, @"YYModel description 不应该为 nil");
+    XCTAssertTrue([desc containsString:@"YYBasicModel"], @"description 应该包含类名");
+}
+
+- (void)testYYModelEncodeDecode {
+    YYBasicModel *model = [[YYBasicModel alloc] init];
+    model.name = @"编码测试";
+    model.age = 35;
+    model.isMale = YES;
+    
+    NSMutableData *data = [NSMutableData data];
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initForWritingWithMutableData:data];
+    [model yy_modelEncodeWithCoder:archiver];
+    [archiver finishEncoding];
+    XCTAssertNotNil(data, @"编码应该成功");
+    
+    NSKeyedUnarchiver *unarchiver = nil;
+    if (@available(iOS 11.0, *)) {
+        NSError* error = nil;
+        unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:&error];
+    } else {
+        unarchiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:data];
+    }
+    YYBasicModel *decodedModel = [[YYBasicModel alloc] yy_modelInitWithCoder:unarchiver];
+    XCTAssertNotNil(decodedModel, @"解码应该成功");
+    XCTAssertEqualObjects(decodedModel.name, @"编码测试", @"解码后 name 应该匹配");
+    XCTAssertEqual(decodedModel.age, 35, @"解码后 age 应该匹配");
+    XCTAssertEqual(decodedModel.isMale, YES, @"解码后 isMale 应该匹配");
+}
+
+- (void)testYYModelEncodeDecodeWithDynamicProperties {
+    YYProtocolModel *model = [[YYProtocolModel alloc] init];
+    model.realName = @"动态属性测试";
+    model.nickName = @"昵称";
+    model.score = 100;
+    
+    NSMutableData *data = [NSMutableData data];
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initForWritingWithMutableData:data];
+    [model yy_modelEncodeWithCoder:archiver];
+    [archiver finishEncoding];
+    XCTAssertNotNil(data, @"编码应该成功");
+    
+    NSKeyedUnarchiver *unarchiver = nil;
+    if (@available(iOS 11.0, *)) {
+        NSError* error = nil;
+        unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:&error];
+    } else {
+        unarchiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:data];
+    }
+    YYProtocolModel *decodedModel = [[YYProtocolModel alloc] yy_modelInitWithCoder:unarchiver];
+    XCTAssertNotNil(decodedModel, @"解码应该成功");
+    XCTAssertEqualObjects(decodedModel.realName, @"动态属性测试", @"解码后 realName 应该匹配");
+    XCTAssertEqualObjects(decodedModel.nickName, @"昵称", @"解码后 nickName 动态属性应该匹配");
+    XCTAssertEqual(decodedModel.score, 100, @"解码后 score 动态属性应该匹配");
+}
+
+- (void)testYYModelWithCBModelFeatures {
+    YYBasicModel *model = [[YYBasicModel alloc] init];
+    model.name = @"CBModel 特性测试";
+    model.age = 40;
+    
+    TestModel *testModel = [[TestModel alloc] init];
+    testModel.intValue = 100;
+    
+    NSDictionary *json = [testModel yy_modelToJSONObject];
+    XCTAssertEqualObjects(json[@"intValue"], @100, @"CBModel 子类应该支持 YYModel 转换");
 }
 
 @end

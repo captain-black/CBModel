@@ -516,56 +516,6 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
     return YES;
 }
 
-#pragma mark - NSCoding 支持
-- (instancetype)initWithCoder:(NSCoder *)coder {
-    self = [super init];
-    if (self) {
-        uint propCount;
-        objc_property_t *propList = class_copyPropertyList([self class], &propCount);
-        for (uint i = 0; i < propCount; i++) {
-            objc_property_t prop = propList[i];
-            char* attrValue = property_copyAttributeValue(prop, "D");
-            free(attrValue);
-            if (attrValue == NULL) {
-                continue;
-            }
-            
-            const char* propName = property_getName(prop);
-            NSString* key = [NSString stringWithUTF8String:propName];
-            
-            if ([coder containsValueForKey:key]) {
-                id value = [coder decodeObjectForKey:key];
-                if (value) {
-                    self.sDynamicProperties[key] = value;
-                }
-            }
-        }
-        free(propList);
-    }
-    return self;
-}
-
-- (void)encodeWithCoder:(NSCoder *)coder {
-    [self.sDynamicProperties enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
-        [coder encodeObject:value forKey:key];
-    }];
-}
-
-#pragma mark - NSCopying 支持
-- (id)copyWithZone:(NSZone *)zone {
-    CBModel *copy = [[[self class] allocWithZone:zone] init];
-    if (copy) {
-        [self.sDynamicProperties enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
-            if ([value conformsToProtocol:@protocol(NSCopying)]) {
-                copy.sDynamicProperties[key] = [value copyWithZone:zone];
-            } else {
-                copy.sDynamicProperties[key] = value;
-            }
-        }];
-    }
-    return copy;
-}
-
 #pragma mark - Description 支持
 - (NSString *)_formatValue:(NSValue *)value withType:(const char *)typeEncoding {
     if (value == nil || typeEncoding == NULL) {
