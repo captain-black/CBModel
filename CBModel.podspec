@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'CBModel'
-  s.version          = '1.2.0'
+  s.version          = '1.2.1'
   s.summary          = 'CBModel 为其子类在运行时动态绑定 getter 和 setter 的IMP.'
 
 # This description is used to generate tags and improve search results.
