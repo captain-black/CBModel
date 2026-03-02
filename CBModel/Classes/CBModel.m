@@ -155,21 +155,21 @@ static id _getter_for_atomic_obj_strong_(CBModel* self, SEL _cmd) {
 static void _setter_for_atomic_obj_strong_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
     [self willChangeValueForKey:p];
+    [lock lock];
     self.sDynamicProperties[p] = value;
-    [self didChangeValueForKey:p];
     [lock unlock];
+    [self didChangeValueForKey:p];
 }
 
 static void _setter_for_atomic_obj_copy_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
     [self willChangeValueForKey:p];
+    [lock lock];
     self.sDynamicProperties[p] = [value copy];
-    [self didChangeValueForKey:p];
     [lock unlock];
+    [self didChangeValueForKey:p];
 }
 
 static id _getter_for_atomic_obj_weak_(CBModel* self, SEL _cmd) {
@@ -184,11 +184,11 @@ static id _getter_for_atomic_obj_weak_(CBModel* self, SEL _cmd) {
 static void _setter_for_atomic_obj_weak_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
     [self willChangeValueForKey:p];
+    [lock lock];
     [self.wDynamicProperties setObject:value forKey:p];
-    [self didChangeValueForKey:p];
     [lock unlock];
+    [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_atomic_pointer_(CBModel* self, SEL _cmd) {
@@ -204,12 +204,12 @@ static void* _getter_for_atomic_pointer_(CBModel* self, SEL _cmd) {
 static void _setter_for_atomic_pointer_(CBModel* self, SEL _cmd, const void* value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
     [self willChangeValueForKey:p];
+    [lock lock];
     NSValue* val = [NSValue valueWithPointer:value];
     [self.sDynamicProperties setObject:val forKey:p];
-    [self didChangeValueForKey:p];
     [lock unlock];
+    [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_atomic_sel_(CBModel* self, SEL _cmd) {
@@ -225,12 +225,12 @@ static void* _getter_for_atomic_sel_(CBModel* self, SEL _cmd) {
 static void _setter_for_atomic_sel_(CBModel* self, SEL _cmd, __unsafe_unretained id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
     [self willChangeValueForKey:p];
+    [lock lock];
     NSValue* val = [NSValue valueWithNonretainedObject:value];
     [self.sDynamicProperties setObject:val forKey:p];
-    [self didChangeValueForKey:p];
     [lock unlock];
+    [self didChangeValueForKey:p];
 }
 
 IMP_FOR_TYPE_ATOMIC(char, char);
