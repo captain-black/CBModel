@@ -31,4 +31,18 @@
 @dynamic arrayValue;
 @dynamic dictValue;
 
+@dynamic pointValue;
+@dynamic sizeValue;
+@dynamic rectValue;
+@dynamic edgeInsetsValue;
+@dynamic rangeValue;
+@dynamic transformValue;
+@dynamic transform3DValue;
+
+@dynamic atomicPointValue;
+@dynamic atomicRectValue;
+
+@dynamic current;
+@dynamic specialName;
+
 @end

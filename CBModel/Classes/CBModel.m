@@ -772,11 +772,88 @@ static NSLock *_globalLockForLockCreation = nil;
     return [super resolveInstanceMethod:sel];
 }
 
+#pragma mark - 消息转发签名
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
+    NSMethodSignature *signature = [super methodSignatureForSelector:aSelector];
+    if (signature) {
+        return signature;
+    }
+    
+    Class cls = self.class;
+    NSString *targetSelName = NSStringFromSelector(aSelector);
+    
+    do {
+        uint propCount;
+        objc_property_t *propList = class_copyPropertyList(cls, &propCount);
+        
+        for (uint j = 0; j < propCount; j++) {
+            objc_property_t curProp = propList[j];
+            
+            char *attrValue = property_copyAttributeValue(curProp, "D");
+            if (attrValue == NULL) {
+                continue;
+            }
+            free(attrValue);
+            
+            const char *propName = property_getName(curProp);
+            char *typeAttr = property_copyAttributeValue(curProp, "T");
+            
+            if (typeAttr == NULL) {
+                continue;
+            }
+            
+            NSString *propGetterName = nil;
+            NSString *propSetterName = nil;
+            
+            char *getterAttr = property_copyAttributeValue(curProp, "G");
+            if (getterAttr) {
+                propGetterName = [NSString stringWithUTF8String:getterAttr];
+                free(getterAttr);
+            } else {
+                propGetterName = [NSString stringWithUTF8String:propName];
+            }
+            
+            char *setterAttr = property_copyAttributeValue(curProp, "S");
+            if (setterAttr) {
+                propSetterName = [NSString stringWithUTF8String:setterAttr];
+                free(setterAttr);
+            } else {
+                propSetterName = [NSString stringWithFormat:@"set%c%s:", toupper(propName[0]), propName + 1];
+            }
+            
+            NSString *typeStr = [NSString stringWithUTF8String:typeAttr];
+            
+            if ([targetSelName isEqualToString:propGetterName]) {
+                NSString *sigStr = [NSString stringWithFormat:@"%@@:", typeStr];
+                signature = [NSMethodSignature signatureWithObjCTypes:sigStr.UTF8String];
+                free(typeAttr);
+                free(propList);
+                return signature;
+            }
+            
+            if ([targetSelName isEqualToString:propSetterName]) {
+                NSString *sigStr = [NSString stringWithFormat:@"v@:%@", typeStr];
+                signature = [NSMethodSignature signatureWithObjCTypes:sigStr.UTF8String];
+                free(typeAttr);
+                free(propList);
+                return signature;
+            }
+            
+            free(typeAttr);
+        }
+        
+        free(propList);
+    } while ((cls = [cls superclass]) != CBModel.class);
+    
+    return nil;
+}
+
 - (void)forwardInvocation:(NSInvocation *)anInvocation {
     BOOL resolve = NO;
     
     Class cls = self.class;
     NSString* targetSelName = NSStringFromSelector(anInvocation.selector);
+    
     do {
         uint propCount;
         objc_property_t *propList = class_copyPropertyList(cls, &propCount);
@@ -870,15 +947,16 @@ static NSLock *_globalLockForLockCreation = nil;
                     [anInvocation getArgument:buff atIndex:2];
                     
                     if (isAtomic) {
-                        // atomic 属性需要加锁
                         NSLock* lock = [[self class] lockForProperty:targetPropName inInstance:self];
                         [lock lock];
                         self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
                         [lock unlock];
                     } else {
-                        // nonatomic 属性无需加锁
                         self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
                     }
+                    
+                    [self willChangeValueForKey:targetPropName];
+                    [self didChangeValueForKey:targetPropName];
                     
                     resolve = YES;
                     break;

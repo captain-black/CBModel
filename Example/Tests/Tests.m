@@ -675,4 +675,210 @@
     XCTAssertEqualObjects(json[@"intValue"], @100, @"CBModel 子类应该支持 YYModel 转换");
 }
 
+#pragma mark - 结构体类型测试
+
+- (void)testCGPointProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGPoint point = CGPointMake(100.5, 200.5);
+    model.pointValue = point;
+    
+    point = model.pointValue;
+    
+    XCTAssertEqualWithAccuracy(model.pointValue.x, 100.5, 0.001, @"CGPoint x 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.pointValue.y, 200.5, 0.001, @"CGPoint y 应该正确存储");
+}
+
+- (void)testCGSizeProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGSize size = CGSizeMake(300.0, 400.0);
+    model.sizeValue = size;
+    
+    XCTAssertEqualWithAccuracy(model.sizeValue.width, 300.0, 0.001, @"CGSize width 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.sizeValue.height, 400.0, 0.001, @"CGSize height 应该正确存储");
+}
+
+- (void)testCGRectProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGRect rect = CGRectMake(10.0, 20.0, 100.0, 200.0);
+    model.rectValue = rect;
+    
+    XCTAssertEqualWithAccuracy(model.rectValue.origin.x, 10.0, 0.001, @"CGRect origin.x 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.rectValue.origin.y, 20.0, 0.001, @"CGRect origin.y 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.rectValue.size.width, 100.0, 0.001, @"CGRect size.width 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.rectValue.size.height, 200.0, 0.001, @"CGRect size.height 应该正确存储");
+}
+
+- (void)testUIEdgeInsetsProperty {
+    TestModel *model = [[TestModel alloc] init];
+    UIEdgeInsets insets = UIEdgeInsetsMake(10, 20, 30, 40);
+    model.edgeInsetsValue = insets;
+    
+    XCTAssertEqual(model.edgeInsetsValue.top, 10, @"UIEdgeInsets top 应该正确存储");
+    XCTAssertEqual(model.edgeInsetsValue.left, 20, @"UIEdgeInsets left 应该正确存储");
+    XCTAssertEqual(model.edgeInsetsValue.bottom, 30, @"UIEdgeInsets bottom 应该正确存储");
+    XCTAssertEqual(model.edgeInsetsValue.right, 40, @"UIEdgeInsets right 应该正确存储");
+}
+
+- (void)testNSRangeProperty {
+    TestModel *model = [[TestModel alloc] init];
+    NSRange range = NSMakeRange(5, 10);
+    model.rangeValue = range;
+    
+    XCTAssertEqual(model.rangeValue.location, 5, @"NSRange location 应该正确存储");
+    XCTAssertEqual(model.rangeValue.length, 10, @"NSRange length 应该正确存储");
+}
+
+- (void)testCGAffineTransformProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGAffineTransform transform = CGAffineTransformMakeTranslation(100, 200);
+    model.transformValue = transform;
+    
+    XCTAssertEqualWithAccuracy(model.transformValue.tx, 100, 0.001, @"CGAffineTransform tx 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.transformValue.ty, 200, 0.001, @"CGAffineTransform ty 应该正确存储");
+}
+
+- (void)testCATransform3DProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CATransform3D transform = CATransform3DMakeTranslation(50, 100, 150);
+    model.transform3DValue = transform;
+    
+    XCTAssertEqualWithAccuracy(model.transform3DValue.m41, 50, 0.001, @"CATransform3D m41 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.transform3DValue.m42, 100, 0.001, @"CATransform3D m42 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.transform3DValue.m43, 150, 0.001, @"CATransform3D m43 应该正确存储");
+}
+
+- (void)testAtomicCGPointProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGPoint point = CGPointMake(500.0, 600.0);
+    model.atomicPointValue = point;
+    
+    XCTAssertEqualWithAccuracy(model.atomicPointValue.x, 500.0, 0.001, @"atomic CGPoint x 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.atomicPointValue.y, 600.0, 0.001, @"atomic CGPoint y 应该正确存储");
+}
+
+- (void)testAtomicCGRectProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CGRect rect = CGRectMake(1, 2, 3, 4);
+    model.atomicRectValue = rect;
+    
+    XCTAssertEqualWithAccuracy(model.atomicRectValue.origin.x, 1, 0.001, @"atomic CGRect origin.x 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.atomicRectValue.origin.y, 2, 0.001, @"atomic CGRect origin.y 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.atomicRectValue.size.width, 3, 0.001, @"atomic CGRect size.width 应该正确存储");
+    XCTAssertEqualWithAccuracy(model.atomicRectValue.size.height, 4, 0.001, @"atomic CGRect size.height 应该正确存储");
+}
+
+- (void)testStructPropertyConcurrentAccess {
+    TestModel *model = [[TestModel alloc] init];
+    model.atomicRectValue = CGRectZero;
+    
+    dispatch_group_t group = dispatch_group_create();
+    
+    for (int i = 0; i < 100; i++) {
+        dispatch_group_enter(group);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            CGRect rect = CGRectMake(i, i, i * 2, i * 2);
+            model.atomicRectValue = rect;
+            dispatch_group_leave(group);
+        });
+        
+        dispatch_group_enter(group);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            CGRect rect = model.atomicRectValue;
+            (void)rect;
+            dispatch_group_leave(group);
+        });
+    }
+    
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    XCTAssertTrue(CGRectGetWidth(model.atomicRectValue) >= 0, @"atomic 结构体并发访问后值应该有效");
+}
+
+#pragma mark - 自定义 getter/setter 测试
+
+- (void)testCustomGetter {
+    TestModel *model = [[TestModel alloc] init];
+    model.current = YES;
+    
+    XCTAssertTrue(model.isCurrent, @"自定义 getter isCurrent 应该正常工作");
+    XCTAssertTrue(model.current, @"默认 getter current 也应该正常工作");
+}
+
+- (void)testCustomSetter {
+    TestModel *model = [[TestModel alloc] init];
+    model.specialName = @"测试名称";
+    
+    XCTAssertEqualObjects(model.specialName, @"测试名称", @"自定义 setter setSpecialName: 应该正常工作");
+}
+
+- (void)testCustomGetterKVO {
+    TestModel *model = [[TestModel alloc] init];
+    self.kvoModel = model;
+    
+    [model addObserver:self forKeyPath:@"current" options:NSKeyValueObservingOptionNew context:nil];
+    
+    model.current = YES;
+    
+    XCTAssertTrue(self.kvoObserverCalled, @"自定义 getter 的属性 KVO 应该正常工作");
+    
+    [model removeObserver:self forKeyPath:@"current"];
+}
+
+#pragma mark - 结构体 KVO 测试
+
+- (void)testKVOForCGPointProperty {
+    TestModel *model = [[TestModel alloc] init];
+    self.kvoModel = model;
+    
+    [model addObserver:self forKeyPath:@"pointValue" options:NSKeyValueObservingOptionNew context:nil];
+    
+    model.pointValue = CGPointMake(50, 60);
+    
+    XCTAssertTrue(self.kvoObserverCalled, @"结构体属性 KVO 观察者应该被调用");
+    
+    [model removeObserver:self forKeyPath:@"pointValue"];
+}
+
+- (void)testKVOForCGRectProperty {
+    TestModel *model = [[TestModel alloc] init];
+    self.kvoModel = model;
+    
+    [model addObserver:self forKeyPath:@"rectValue" options:NSKeyValueObservingOptionNew context:nil];
+    
+    model.rectValue = CGRectMake(10, 20, 100, 200);
+    
+    XCTAssertTrue(self.kvoObserverCalled, @"CGRect 属性 KVO 观察者应该被调用");
+    
+    [model removeObserver:self forKeyPath:@"rectValue"];
+}
+
+#pragma mark - 结构体边界测试
+
+- (void)testStructZeroValue {
+    TestModel *model = [[TestModel alloc] init];
+    model.pointValue = CGPointZero;
+    model.sizeValue = CGSizeZero;
+    model.rectValue = CGRectZero;
+    
+    XCTAssertTrue(CGPointEqualToPoint(model.pointValue, CGPointZero), @"CGPointZero 应该正确存储");
+    XCTAssertTrue(CGSizeEqualToSize(model.sizeValue, CGSizeZero), @"CGSizeZero 应该正确存储");
+    XCTAssertTrue(CGRectEqualToRect(model.rectValue, CGRectZero), @"CGRectZero 应该正确存储");
+}
+
+- (void)testStructLargeValue {
+    TestModel *model = [[TestModel alloc] init];
+    CGRect largeRect = CGRectMake(CGFLOAT_MAX, CGFLOAT_MAX, CGFLOAT_MAX, CGFLOAT_MAX);
+    model.rectValue = largeRect;
+    
+    XCTAssertEqual(model.rectValue.origin.x, CGFLOAT_MAX, @"大值 CGRect 应该正确存储");
+}
+
+- (void)testStructNegativeValue {
+    TestModel *model = [[TestModel alloc] init];
+    CGRect rect = CGRectMake(-100, -200, 300, 400);
+    model.rectValue = rect;
+    
+    XCTAssertEqual(model.rectValue.origin.x, -100, @"负值 origin.x 应该正确存储");
+    XCTAssertEqual(model.rectValue.origin.y, -200, @"负值 origin.y 应该正确存储");
+}
+
 @end
