@@ -136,11 +136,11 @@ static _TYPE_ _getter_for_atomic_##typeName##_(CBModel* self, SEL _cmd) {       
 static void _setter_for_atomic_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {   \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
     NSLock* lock = [[self class] lockForProperty:p inInstance:self];                    \
-    [lock lock];                                                                        \
     [self willChangeValueForKey:p];                                                     \
+    [lock lock];                                                                        \
     self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
-    [self didChangeValueForKey:p];                                                      \
     [lock unlock];                                                                      \
+    [self didChangeValueForKey:p];                                                      \
 }
 
 static id _getter_for_atomic_obj_strong_(CBModel* self, SEL _cmd) {
