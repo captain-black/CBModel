@@ -30,6 +30,32 @@
 @property (atomic) NSInteger atomicIntValue;
 @property (atomic, strong) NSString *atomicString;
 
+// 大量 atomic 属性：用于容器竞态回归测试（并发首写触发字典扩容 rehash 竞态）
+@property (atomic) double atomicDoubleValue1;
+@property (atomic) double atomicDoubleValue2;
+@property (atomic) double atomicDoubleValue3;
+@property (atomic) double atomicDoubleValue4;
+@property (atomic) double atomicDoubleValue5;
+@property (atomic) double atomicDoubleValue6;
+@property (atomic) double atomicDoubleValue7;
+@property (atomic) double atomicDoubleValue8;
+@property (atomic) double atomicDoubleValue9;
+@property (atomic) double atomicDoubleValue10;
+@property (atomic) double atomicDoubleValue11;
+@property (atomic) double atomicDoubleValue12;
+@property (atomic) double atomicDoubleValue13;
+@property (atomic) double atomicDoubleValue14;
+@property (atomic) double atomicDoubleValue15;
+@property (atomic) double atomicDoubleValue16;
+@property (atomic, strong) NSString *atomicExtraString1;
+@property (atomic, strong) NSString *atomicExtraString2;
+@property (atomic, strong) NSString *atomicExtraString3;
+@property (atomic, strong) NSString *atomicExtraString4;
+@property (atomic, strong) NSString *atomicExtraString5;
+@property (atomic, strong) NSString *atomicExtraString6;
+@property (atomic, strong) NSString *atomicExtraString7;
+@property (atomic, strong) NSString *atomicExtraString8;
+
 @property (nonatomic, strong) NSArray *arrayValue;
 @property (nonatomic, strong) NSDictionary *dictValue;
 

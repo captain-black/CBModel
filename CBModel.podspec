@@ -34,7 +34,8 @@ Pod::Spec.new do |s|
   s.source           = { :git => 'https://github.com/captain-black/CBModel.git', :tag => s.version.to_s }
   # s.social_media_url = 'https://twitter.com/<TWITTER_USERNAME>'
 
-  s.ios.deployment_target = '8.0'
+  # os_unfair_lock（P0-2.1 实例级锁）要求 iOS 10.0+，deployment target 由 8.0 提升
+  s.ios.deployment_target = '10.0'
 
   s.source_files = 'CBModel/Classes/**/*'
   

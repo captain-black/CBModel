@@ -8,24 +8,45 @@
 #import "CBModel.h"
 
 #import <objc/runtime.h>
+#import <os/lock.h>
 
-@interface CBModel ()
+@interface CBModel () {
+    /// 实例级锁：保护 sDynamicProperties / wDynamicProperties 等共享容器的所有读写。
+    /// 原来 per-property 锁粒度保护不了共享容器（两个线程 set 不同属性时各持各的锁、
+    /// 却并发写同一个字典），会导致字典内部结构损坏/崩溃，这里统一收敛到一把实例锁。
+    /// 用 os_unfair_lock 而非 NSLock/pthread_mutex：alloc 清零后即等于 OS_UNFAIR_LOCK_INIT，
+    /// 天生有效、零懒创建、零竞态面（NSLock 懒创建的快速路径读是双重检查锁竞态，TSan 会报；
+    /// pthread_mutex 的 PTHREAD_MUTEX_INITIALIZER 非全零，零值 mutex 的 lock 直接返回 EINVAL 失效）。
+    /// 注意：非递归锁，持锁路径内不得再嵌套加锁（容器创建需走 ForWrite 辅助方法）。
+    @public
+    os_unfair_lock _containerLock;
+    /// 强/弱引用容器 ivar 在类扩展中声明（仅 .m 内可见）：
+    /// 宏生成的 C 函数位于 @implementation 之前，需直接访问 ivar 实现"读路径不触发字典懒创建"（见文档 3.2）
+    NSMutableDictionary<NSString*, id> *_sDynamicProperties;
+    NSMapTable<NSString*, id> *_wDynamicProperties;
+}
 + (NSString* _Nullable)propNameForSel:(SEL)sel;
 + (NSString* _Nullable)propNameForSelector:(NSString*)selectorName;
-+ (NSLock*)lockForProperty:(NSString*)propName inInstance:(CBModel*)instance;
+/// 写路径取强引用容器（必须在持有 _containerLock 时调用，内部不重复加锁）
+- (NSMutableDictionary<NSString*, id> *)sDynamicPropertiesForWrite;
+/// 写路径取弱引用容器（必须在持有 _containerLock 时调用）
+- (NSMapTable<NSString*, id> *)wDynamicPropertiesForWrite;
 @end
 
 #pragma mark - nonatomic 非原子性的IMP实现
 #define IMP_FOR_TYPE(typeName, _TYPE_)                                                  \
 static _TYPE_ _getter_for_##typeName##_(CBModel* self, SEL _cmd) {                      \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
+    os_unfair_lock_lock(&self->_containerLock);                                          \
+    NSValue* val = self->_sDynamicProperties[p];                                        \
+    os_unfair_lock_unlock(&self->_containerLock);                                        \
     unsigned int size = sizeof(_TYPE_);                                                 \
     void* value = alloca(size);                                                         \
     memset(value, 0, size);                                                             \
     if (@available(iOS 11.0, *)) {                                                      \
-        [self.sDynamicProperties[p] getValue:value size:size];                          \
+        [val getValue:value size:size];                                                 \
     } else {                                                                            \
-        [self.sDynamicProperties[p] getValue:value];                                    \
+        [val getValue:value];                                                           \
     }                                                                                   \
     return *(_TYPE_*)value;                                                             \
 }                                                                                       \
@@ -33,46 +54,62 @@ static _TYPE_ _getter_for_##typeName##_(CBModel* self, SEL _cmd) {              
 static void _setter_for_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {          \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
     [self willChangeValueForKey:p];                                                     \
-    self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
+    os_unfair_lock_lock(&self->_containerLock);                                          \
+    [self sDynamicPropertiesForWrite][p] = [NSValue value:&value withObjCType:@encode(_TYPE_)]; \
+    os_unfair_lock_unlock(&self->_containerLock);                                        \
     [self didChangeValueForKey:p];                                                      \
 }
 
 
 static id _getter_for_obj_strong_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    return self.sDynamicProperties[p];
+    os_unfair_lock_lock(&self->_containerLock);
+    id value = self->_sDynamicProperties[p];
+    os_unfair_lock_unlock(&self->_containerLock);
+    return value;
 }
 
 static void _setter_for_obj_strong_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     [self willChangeValueForKey:p];
-    self.sDynamicProperties[p] = value;
+    os_unfair_lock_lock(&self->_containerLock);
+    [self sDynamicPropertiesForWrite][p] = value;
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void _setter_for_obj_copy_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     [self willChangeValueForKey:p];
-    self.sDynamicProperties[p] = [value copy];
+    os_unfair_lock_lock(&self->_containerLock);
+    [self sDynamicPropertiesForWrite][p] = [value copy];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static id _getter_for_obj_weak_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    return [self.wDynamicProperties objectForKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    id value = [self->_wDynamicProperties objectForKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
+    return value;
 }
 
 static void _setter_for_obj_weak_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     [self willChangeValueForKey:p];
-    [self.wDynamicProperties setObject:value
-                                forKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self wDynamicPropertiesForWrite] setObject:value
+                                         forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_pointer_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    NSValue* val = [self->_sDynamicProperties objectForKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     return [val pointerValue];
 }
 
@@ -80,14 +117,18 @@ static void _setter_for_pointer_(CBModel* self, SEL _cmd, const void* value) {
     NSString* p = [[self class] propNameForSel:_cmd];
     NSValue* val = [NSValue valueWithPointer:value];
     [self willChangeValueForKey:p];
-    [self.sDynamicProperties setObject:val
-                                forKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self sDynamicPropertiesForWrite] setObject:val
+                                         forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_sel_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    NSValue* val = [self->_sDynamicProperties objectForKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     return (__bridge void*)[val nonretainedObjectValue];
 }
 
@@ -95,8 +136,10 @@ static void _setter_for_sel_(CBModel* self, SEL _cmd, __unsafe_unretained id val
     NSString* p = [[self class] propNameForSel:_cmd];
     [self willChangeValueForKey:p];
     NSValue* val = [NSValue valueWithNonretainedObject:value];
-    [self.sDynamicProperties setObject:val
-                                forKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self sDynamicPropertiesForWrite] setObject:val
+                                         forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
@@ -119,117 +162,107 @@ IMP_FOR_TYPE(bool, bool);
 #define IMP_FOR_TYPE_ATOMIC(typeName, _TYPE_)                                           \
 static _TYPE_ _getter_for_atomic_##typeName##_(CBModel* self, SEL _cmd) {               \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];                    \
-    [lock lock];                                                                        \
+    os_unfair_lock_lock(&self->_containerLock);                                          \
+    NSValue* val = self->_sDynamicProperties[p];                                        \
+    os_unfair_lock_unlock(&self->_containerLock);                                        \
     unsigned int size = sizeof(_TYPE_);                                                 \
     void* value = alloca(size);                                                         \
     memset(value, 0, size);                                                             \
     if (@available(iOS 11.0, *)) {                                                      \
-        [self.sDynamicProperties[p] getValue:value size:size];                          \
+        [val getValue:value size:size];                                                 \
     } else {                                                                            \
-        [self.sDynamicProperties[p] getValue:value];                                    \
+        [val getValue:value];                                                           \
     }                                                                                   \
-    [lock unlock];                                                                      \
     return *(_TYPE_*)value;                                                             \
 }                                                                                       \
 \
 static void _setter_for_atomic_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {   \
     NSString* p = [[self class] propNameForSel:_cmd];                                   \
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];                    \
     [self willChangeValueForKey:p];                                                     \
-    [lock lock];                                                                        \
-    self.sDynamicProperties[p] = [NSValue value:&value withObjCType:@encode(_TYPE_)];   \
-    [lock unlock];                                                                      \
+    os_unfair_lock_lock(&self->_containerLock);                                          \
+    [self sDynamicPropertiesForWrite][p] = [NSValue value:&value withObjCType:@encode(_TYPE_)]; \
+    os_unfair_lock_unlock(&self->_containerLock);                                        \
     [self didChangeValueForKey:p];                                                      \
 }
 
 static id _getter_for_atomic_obj_strong_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
-    id value = self.sDynamicProperties[p];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    id value = self->_sDynamicProperties[p];
+    os_unfair_lock_unlock(&self->_containerLock);
     return value;
 }
 
 static void _setter_for_atomic_obj_strong_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
     [self willChangeValueForKey:p];
-    [lock lock];
-    self.sDynamicProperties[p] = value;
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    [self sDynamicPropertiesForWrite][p] = value;
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void _setter_for_atomic_obj_copy_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
     [self willChangeValueForKey:p];
-    [lock lock];
-    self.sDynamicProperties[p] = [value copy];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    [self sDynamicPropertiesForWrite][p] = [value copy];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static id _getter_for_atomic_obj_weak_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
-    id value = [self.wDynamicProperties objectForKey:p];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    id value = [self->_wDynamicProperties objectForKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     return value;
 }
 
 static void _setter_for_atomic_obj_weak_(CBModel* self, SEL _cmd, id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
     [self willChangeValueForKey:p];
-    [lock lock];
-    [self.wDynamicProperties setObject:value forKey:p];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self wDynamicPropertiesForWrite] setObject:value forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_atomic_pointer_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
-    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    NSValue* val = [self->_sDynamicProperties objectForKey:p];
     void* result = [val pointerValue];
-    [lock unlock];
+    os_unfair_lock_unlock(&self->_containerLock);
     return result;
 }
 
 static void _setter_for_atomic_pointer_(CBModel* self, SEL _cmd, const void* value) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
     [self willChangeValueForKey:p];
-    [lock lock];
     NSValue* val = [NSValue valueWithPointer:value];
-    [self.sDynamicProperties setObject:val forKey:p];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self sDynamicPropertiesForWrite] setObject:val forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
 static void* _getter_for_atomic_sel_(CBModel* self, SEL _cmd) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
-    [lock lock];
-    NSValue* val = [self.sDynamicProperties objectForKey:p];
+    os_unfair_lock_lock(&self->_containerLock);
+    NSValue* val = [self->_sDynamicProperties objectForKey:p];
     void* result = (__bridge void*)[val nonretainedObjectValue];
-    [lock unlock];
+    os_unfair_lock_unlock(&self->_containerLock);
     return result;
 }
 
 static void _setter_for_atomic_sel_(CBModel* self, SEL _cmd, __unsafe_unretained id value) {
     NSString* p = [[self class] propNameForSel:_cmd];
-    NSLock* lock = [[self class] lockForProperty:p inInstance:self];
     [self willChangeValueForKey:p];
-    [lock lock];
     NSValue* val = [NSValue valueWithNonretainedObject:value];
-    [self.sDynamicProperties setObject:val forKey:p];
-    [lock unlock];
+    os_unfair_lock_lock(&self->_containerLock);
+    [[self sDynamicPropertiesForWrite] setObject:val forKey:p];
+    os_unfair_lock_unlock(&self->_containerLock);
     [self didChangeValueForKey:p];
 }
 
@@ -396,10 +429,12 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
 
 #pragma mark - KVC 支持
 - (id)valueForUndefinedKey:(NSString *)key {
-    id value = self.sDynamicProperties[key];
+    os_unfair_lock_lock(&_containerLock);
+    id value = self->_sDynamicProperties[key];
     if (value == nil) {
-        value = [self.wDynamicProperties objectForKey:key];
+        value = [self->_wDynamicProperties objectForKey:key];
     }
+    os_unfair_lock_unlock(&_containerLock);
     
     id retValue = nil;
     if ([value isKindOfClass:[NSValue class]] && ![value isKindOfClass:[NSNumber class]]) {
@@ -565,7 +600,9 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
         NSString* key = [NSString stringWithUTF8String:propName];
         
         char* typeEncoding = property_copyAttributeValue(prop, "T");
-        id storedValue = self.sDynamicProperties[key];
+        os_unfair_lock_lock(&_containerLock);
+        id storedValue = self->_sDynamicProperties[key];
+        os_unfair_lock_unlock(&_containerLock);
         
         if (storedValue && typeEncoding) {
             NSString *valueStr;
@@ -617,8 +654,18 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
 
 #pragma mark - 属性映射表
 @synthesize sDynamicProperties = _sDynamicProperties;
-/// 强引用映射表
+/// 强引用映射表（懒创建需在实例锁内进行，避免多线程并发创建导致字典丢失）
 - (NSMutableDictionary<NSString*, id> *)sDynamicProperties {
+    os_unfair_lock_lock(&_containerLock);
+    if (_sDynamicProperties == nil) {
+        _sDynamicProperties = [NSMutableDictionary dictionary];
+    }
+    os_unfair_lock_unlock(&_containerLock);
+    return _sDynamicProperties;
+}
+
+/// 写路径取强引用容器：必须在持有 _containerLock 时调用（非递归锁，内部不得重复加锁）
+- (NSMutableDictionary<NSString*, id> *)sDynamicPropertiesForWrite {
     if (_sDynamicProperties == nil) {
         _sDynamicProperties = [NSMutableDictionary dictionary];
     }
@@ -626,8 +673,18 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
 }
 
 @synthesize wDynamicProperties = _wDynamicProperties;
-/// 弱引用映射表
+/// 弱引用映射表（懒创建需在实例锁内进行）
 - (NSMapTable<NSString*, id> *)wDynamicProperties {
+    os_unfair_lock_lock(&_containerLock);
+    if (_wDynamicProperties == nil) {
+        _wDynamicProperties = [NSMapTable strongToWeakObjectsMapTable];
+    }
+    os_unfair_lock_unlock(&_containerLock);
+    return _wDynamicProperties;
+}
+
+/// 写路径取弱引用容器：必须在持有 _containerLock 时调用
+- (NSMapTable<NSString*, id> *)wDynamicPropertiesForWrite {
     if (_wDynamicProperties == nil) {
         _wDynamicProperties = [NSMapTable strongToWeakObjectsMapTable];
     }
@@ -635,31 +692,12 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
 }
 
 @synthesize propertyLocks = _propertyLocks;
-/// 属性锁映射表
+/// 兼容保留：per-property 锁体系已废弃（容器读写统一收敛到实例级锁），该表不再被内部使用
 - (NSMutableDictionary<NSString*, NSLock*> *)propertyLocks {
     if (_propertyLocks == nil) {
         _propertyLocks = [NSMutableDictionary dictionary];
     }
     return _propertyLocks;
-}
-
-#pragma mark - 锁管理
-static NSLock *_globalLockForLockCreation = nil;
-+ (NSLock*)lockForProperty:(NSString*)propName inInstance:(CBModel*)instance {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        _globalLockForLockCreation = [[NSLock alloc] init];
-    });
-    
-    [_globalLockForLockCreation lock];
-    NSMutableDictionary* locks = instance.propertyLocks;
-    NSLock* lock = locks[propName];
-    if (lock == nil) {
-        lock = [[NSLock alloc] init];
-        locks[propName] = lock;
-    }
-    [_globalLockForLockCreation unlock];
-    return lock;
 }
 
 #pragma mark - 动态实现方法
@@ -883,39 +921,20 @@ static NSLock *_globalLockForLockCreation = nil;
                 }
                 // 目标方法名跟当前属性的getter方法名一致
                 if ([targetSelName isEqualToString:propGetterName]) {
-                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
-                    attrValue = property_copyAttributeValue(curProp, "N");
-                    BOOL isAtomic = (attrValue == NULL);
-                    free(attrValue); attrValue = NULL;
-                    
                     NSUInteger retSize = anInvocation.methodSignature.methodReturnLength;
                     
-                    if (isAtomic) {
-                        // atomic 属性需要加锁
-                        NSLock* lock = [[self class] lockForProperty:targetPropName inInstance:self];
-                        [lock lock];
-                        NSValue* value = self.sDynamicProperties[targetPropName];
-                        if (value) {
-                            void* buff = alloca(retSize);
-                            memset(buff, 0, retSize);
-                            [value getValue:buff size:retSize];
-                            [anInvocation setReturnValue:buff];
-                        }
-                        [lock unlock];
-                        resolve = YES;
-                        break;
-                    } else {
-                        // nonatomic 属性无需加锁
-                        NSValue* value = self.sDynamicProperties[targetPropName];
-                        if (value) {
-                            void* buff = alloca(retSize);
-                            memset(buff, 0, retSize);
-                            [value getValue:buff size:retSize];
-                            [anInvocation setReturnValue:buff];
-                        }
-                        resolve = YES;
-                        break;
+                    // atomic/nonatomic 统一走实例级锁，保护共享容器
+                    os_unfair_lock_lock(&_containerLock);
+                    NSValue* value = self->_sDynamicProperties[targetPropName];
+                    os_unfair_lock_unlock(&_containerLock);
+                    if (value) {
+                        void* buff = alloca(retSize);
+                        memset(buff, 0, retSize);
+                        [value getValue:buff size:retSize];
+                        [anInvocation setReturnValue:buff];
                     }
+                    resolve = YES;
+                    break;
                 }
             }
             
@@ -935,27 +954,21 @@ static NSLock *_globalLockForLockCreation = nil;
                 }
                 // 目标方法名跟当前属性的setter方法名一致
                 if ([targetSelName isEqualToString:propSetterName]) {
-                    // 判断是否为 atomic 属性（属性编码中不包含 'N'）
-                    attrValue = property_copyAttributeValue(curProp, "N");
-                    BOOL isAtomic = (attrValue == NULL);
-                    free(attrValue); attrValue = NULL;
-                    
                     const char* argTypeCode = [anInvocation.methodSignature getArgumentTypeAtIndex:2];
                     NSUInteger argSize = 0;
                     NSGetSizeAndAlignment(argTypeCode, &argSize, NULL);
                     void* buff = alloca(argSize);
                     [anInvocation getArgument:buff atIndex:2];
                     
-                    if (isAtomic) {
-                        NSLock* lock = [[self class] lockForProperty:targetPropName inInstance:self];
-                        [lock lock];
-                        self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
-                        [lock unlock];
-                    } else {
-                        self.sDynamicProperties[targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
-                    }
-                    
+                    // KVO 规范要求 willChange 必须先于变更（观测者在 willChange 内取旧值快照），
+                    // 与标量/对象 setter 的顺序保持一致
                     [self willChangeValueForKey:targetPropName];
+                    
+                    // atomic/nonatomic 统一走实例级锁，保护共享容器
+                    os_unfair_lock_lock(&_containerLock);
+                    [self sDynamicPropertiesForWrite][targetPropName] = [NSValue value:buff withObjCType:argTypeCode];
+                    os_unfair_lock_unlock(&_containerLock);
+                    
                     [self didChangeValueForKey:targetPropName];
                     
                     resolve = YES;
