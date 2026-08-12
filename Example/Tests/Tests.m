@@ -339,6 +339,48 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     XCTAssertNotNil(model.strongString, @"并发写入后字符串不应该为 nil");
 }
 
+#pragma mark - 类级缓存竞态回归测试（P0-2.3）
+
+// 验证类级缓存（selector→属性名）并发读写安全（P0-2.3 回归）：修复前 resolveInstanceMethod:
+// 被多线程并发触发时（不同 selector 首次访问）会并发写共享静态字典，损坏缓存结构；
+// 修复后并发首次解析不竞态、各属性最终值正确
+- (void)testClassLevelCacheConcurrentResolve {
+    // 两个全新模型类：本用例是唯一使用者，所有 selector 的首次解析都发生在并发阶段
+    ResolveRaceModel *model = [[ResolveRaceModel alloc] init];
+    ResolveRaceModel2 *model2 = [[ResolveRaceModel2 alloc] init];
+    dispatch_group_t group = dispatch_group_create();
+    
+    for (int i = 0; i < 40; i++) {
+        dispatch_group_enter(group);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // 并发首次访问不同属性 → 并发 resolveInstanceMethod → 并发写类级缓存
+            model.propA = i;
+            model.propB = i;
+            model.propC = i;
+            model.propD = i;
+            model.propE = i;
+            model.strF = [NSString stringWithFormat:@"f%d", i];
+            model.strG = [NSString stringWithFormat:@"g%d", i];
+            model.strH = [NSString stringWithFormat:@"h%d", i];
+            model2.propA = i;
+            model2.propB = i;
+            model2.propC = i;
+            model2.propD = i;
+            model2.strE = [NSString stringWithFormat:@"e%d", i];
+            model2.strF = [NSString stringWithFormat:@"f%d", i];
+            dispatch_group_leave(group);
+        });
+    }
+    
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    
+    // 解析完成后所有属性都应可读且值有效（修复前缓存损坏会导致 propName 映射丢失、值错乱）
+    XCTAssertTrue(model.propE >= 0 && model.propE < 40, @"并发首次解析后值应该有效");
+    XCTAssertTrue(model2.propD >= 0 && model2.propD < 40, @"并发首次解析后值应该有效");
+    XCTAssertNotNil(model.strH, @"并发首次解析后字符串不应该为 nil");
+    XCTAssertNotNil(model2.strF, @"并发首次解析后字符串不应该为 nil");
+}
+
 #pragma mark - 边界情况测试
 
 // 验证对象属性接受 nil 赋值：不崩溃且属性为 nil
@@ -493,6 +535,18 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     XCTAssertTrue([desc containsString:@"TestModel"], @"description 应该包含类名");
     XCTAssertTrue([desc containsString:@"intValue"], @"description 应该包含属性名");
     XCTAssertTrue([desc containsString:@"42"], @"description 应该包含属性值");
+}
+
+// 验证 description 对 long double 属性的格式化（P0-2.4 回归）：修复前 'D' 类型掉进
+// default 分支输出裸 NSValue（十六进制字节）；修复后输出格式化数值
+- (void)testDescriptionLongDouble {
+    TestModel *model = [[TestModel alloc] init];
+    model.ldValue = 3.14L;
+    
+    NSString *desc = model.description;
+    XCTAssertNotNil(desc, @"description 不应该为 nil");
+    XCTAssertTrue([desc containsString:@"ldValue"], @"description 应该包含属性名");
+    XCTAssertTrue([desc containsString:@"3.14"], @"description 应该输出 long double 数值");
 }
 
 #pragma mark - YYModel 兼容性测试

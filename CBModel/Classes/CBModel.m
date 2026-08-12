@@ -570,6 +570,8 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
         case 'Q': { unsigned long long v; [value getValue:&v]; return [NSString stringWithFormat:@"%llu", v]; }
         case 'f': { float v; [value getValue:&v]; return [NSString stringWithFormat:@"%f", v]; }
         case 'd': { double v; [value getValue:&v]; return [NSString stringWithFormat:@"%f", v]; }
+        // long double 与 KVC 里对 'D' 的特殊处理保持一致（无法装箱 NSNumber，用 NSValue 承载）
+        case 'D': { long double v; [value getValue:&v]; return [NSString stringWithFormat:@"%Lf", v]; }
         case 'B': { BOOL v; [value getValue:&v]; return v ? @"YES" : @"NO"; }
         case '@': {
             if ([value isKindOfClass:[NSValue class]]) {
@@ -622,6 +624,12 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
 
 #pragma mark - selector 映射 属性名
 static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*>* _classDynamicSel2Props;
+/// 类级缓存静态锁：resolveInstanceMethod: 可能被多线程并发触发（不同 selector 首次访问），
+/// 并发的读写/懒创建会损坏该共享 NSMutableDictionary（与 2.1 实例容器竞态同类问题）。
+/// 静态存储的 os_unfair_lock 用 OS_UNFAIR_LOCK_INIT 显式初始化，无需运行时初始化。
+static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
+
+/// 获取某类的 selector→属性名 字典（必须在持有 _sel2PropsLock 时调用，内部不重复加锁）
 + (NSMutableDictionary<NSString *,NSString *> *)_dySel2Props {
     if (_classDynamicSel2Props == nil) {
         _classDynamicSel2Props = [NSMutableDictionary dictionary];
@@ -639,17 +647,36 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
 }
 
 + (NSString *)propNameForSelector:(NSString *)selector {
+    os_unfair_lock_lock(&_sel2PropsLock);
     Class cls = self;
     NSString* propName = nil;
     do {
         propName = [cls _dySel2Props][selector];
     } while (propName == nil && (cls = [cls superclass]) != CBModel.class);
+    os_unfair_lock_unlock(&_sel2PropsLock);
     
     return propName;
 }
 
-+ (void)setPropName:(NSString*)propName forSelector:(NSString*)selector {
-    [self _dySel2Props][selector] = propName;
+/// 动态方法安装：在类级缓存锁内完成"查重 → 写映射 → class_addMethod"。
+/// 必须保证映射先于 IMP 发布且两者原子一致——否则并发首次解析时会出现
+/// "IMP 已发布但映射未写入"的窗口：其他线程立即调用 setter 会拿到 nil 属性名而崩溃
+/// （映射与 IMP 的可见性由 _sel2PropsLock 的 happens-before 保证）。
+/// 返回是否成功添加（已存在映射则返回 NO，由调用方交给 runtime 重试查找）。
++ (BOOL)installDynamicMethod:(SEL)sel
+                        imp:(IMP)imp
+                      types:(const char*)types
+                   propName:(NSString*)propName
+                 forSelector:(NSString*)selectorName {
+    os_unfair_lock_lock(&_sel2PropsLock);
+    BOOL added = NO;
+    if (![self _dySel2Props][selectorName]) {
+        [self _dySel2Props][selectorName] = propName;
+        added = class_addMethod(self, sel, imp, types);
+        // 竞争失败（其他线程已添加同名方法）时无需回滚：映射内容一致，重复写入无害
+    }
+    os_unfair_lock_unlock(&_sel2PropsLock);
+    return added;
 }
 
 #pragma mark - 属性映射表
@@ -749,14 +776,15 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                     BOOL isAtomic = (attrValue == NULL);
                     free(attrValue); attrValue = NULL;
                     
-                    // 动态添加方法实现
+                    // 动态添加方法实现（映射与 IMP 原子发布，见 installDynamicMethod:）
                     IMP impForProp = imp_for_property(NO, isAtomic, property_getAttributes(curProp));
-                    if (![cls propNameForSelector:propGetterName] &&
-                        getterTypes &&
+                    if (getterTypes &&
                         impForProp &&
-                        class_addMethod(cls, sel, impForProp, getterTypes)) {
-                        [cls setPropName:targetPropName
-                             forSelector:propGetterName];
+                        [cls installDynamicMethod:sel
+                                             imp:impForProp
+                                           types:getterTypes
+                                        propName:targetPropName
+                                      forSelector:propGetterName]) {
                         resolve = YES;
                         break;
                     }
@@ -788,14 +816,15 @@ static NSMutableDictionary<NSString*, NSMutableDictionary<NSString*, NSString*>*
                     BOOL isAtomic = (attrValue == NULL);
                     free(attrValue); attrValue = NULL;
                     
-                    // 动态添加方法实现
+                    // 动态添加方法实现（映射与 IMP 原子发布，见 installDynamicMethod:）
                     IMP impForProp = imp_for_property(YES, isAtomic, property_getAttributes(curProp));
-                    if (![cls propNameForSelector:propSetterName] &&
-                        setterTypes &&
+                    if (setterTypes &&
                         impForProp &&
-                        class_addMethod(cls, sel, impForProp, setterTypes)) {
-                        [cls setPropName:targetPropName
-                             forSelector:propSetterName];
+                        [cls installDynamicMethod:sel
+                                             imp:impForProp
+                                           types:setterTypes
+                                        propName:targetPropName
+                                      forSelector:propSetterName]) {
                         resolve = YES;
                         break;
                     }

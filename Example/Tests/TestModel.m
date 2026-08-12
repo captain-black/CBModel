@@ -46,3 +46,27 @@
 @dynamic specialName;
 
 @end
+
+@implementation ResolveRaceModel
+
+@dynamic propA;
+@dynamic propB;
+@dynamic propC;
+@dynamic propD;
+@dynamic propE;
+@dynamic strF;
+@dynamic strG;
+@dynamic strH;
+
+@end
+
+@implementation ResolveRaceModel2
+
+@dynamic propA;
+@dynamic propB;
+@dynamic propC;
+@dynamic propD;
+@dynamic strE;
+@dynamic strF;
+
+@end

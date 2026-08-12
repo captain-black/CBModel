@@ -80,3 +80,28 @@
 @property (nonatomic, setter=setSpecialName:) NSString *specialName;
 
 @end
+
+#pragma mark - 类级缓存竞态测试模型（P0-2.3）
+
+/// 仅供 testClassLevelCacheConcurrentResolve 使用：保证本类的 selector
+/// 首次解析（resolveInstanceMethod:）恰好发生在并发阶段，从而并发写类级缓存
+@interface ResolveRaceModel : CBModel
+@property (nonatomic) NSInteger propA;
+@property (nonatomic) NSInteger propB;
+@property (nonatomic) NSInteger propC;
+@property (nonatomic) NSInteger propD;
+@property (nonatomic) NSInteger propE;
+@property (nonatomic, strong) NSString *strF;
+@property (nonatomic, strong) NSString *strG;
+@property (nonatomic, strong) NSString *strH;
+@end
+
+/// 第二组全新类：跨类并发首次解析，规避 runtime 对同一类解析的潜在串行化
+@interface ResolveRaceModel2 : CBModel
+@property (nonatomic) NSInteger propA;
+@property (nonatomic) NSInteger propB;
+@property (nonatomic) NSInteger propC;
+@property (nonatomic) NSInteger propD;
+@property (nonatomic, strong) NSString *strE;
+@property (nonatomic, strong) NSString *strF;
+@end
