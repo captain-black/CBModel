@@ -8,6 +8,7 @@
 #import "CBModel.h"
 
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <os/lock.h>
 #import <stdatomic.h>
 
@@ -326,7 +327,12 @@ IMP_FOR_TYPE_ATOMIC(bool, bool);
  //*/
 static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttributes) {
     char *typeEncoding = strchr(propAttributes, 'T');
-    switch (*(typeEncoding+1)) {
+    // 编译器属性的 T 编码无引号（Ti,D）；运行时动态属性（class_addProperty）带引号（T"i",D）——统一跳过引号
+    char typeCode = *(typeEncoding + 1);
+    if (typeCode == '"') {
+        typeCode = *(typeEncoding + 2);
+    }
+    switch (typeCode) {
         case 'c': // char
         {
             return isSetter? (isAtomic? (IMP)_setter_for_atomic_char_ : (IMP)_setter_for_char_) : (isAtomic? (IMP)_getter_for_atomic_char_ : (IMP)_getter_for_char_);
@@ -540,7 +546,12 @@ static void _class_setter_for_sel_(Class self, SEL _cmd, __unsafe_unretained id 
 /// 类属性的 IMP 选择：支持对象/标量/指针/SEL；结构体/联合体/C 数组返回 nil（类属性暂不支持转发）
 static IMP imp_for_class_property(BOOL isSetter, const char *propAttributes) {
     char *typeEncoding = strchr(propAttributes, 'T');
-    switch (*(typeEncoding + 1)) {
+    // 动态属性的 T 编码可能带引号（T"i"）——统一跳过（与 imp_for_property 一致）
+    char typeCode = *(typeEncoding + 1);
+    if (typeCode == '"') {
+        typeCode = *(typeEncoding + 2);
+    }
+    switch (typeCode) {
         case '@': {
             char *attr;
             if ((attr = strstr(strchr(typeEncoding, ','), ",C"))) {
@@ -675,52 +686,46 @@ static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
         
         SEL setterSel = NSSelectorFromString(setterName);
         if ([self respondsToSelector:setterSel]) {
-            NSMethodSignature *sig = [self methodSignatureForSelector:setterSel];
-            NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-            [inv setTarget:self];
-            [inv setSelector:setterSel];
-            // 根据属性类型把 value 转成对应 C 类型，再 setArgument
+            // 直接 objc_msgSend 调用 setter（按属性类型把 value 转成对应 C 类型）。
+            // 不用 NSInvocation：其对运行时动态注入的方法（插件化场景）存在兼容性问题
+            // （实测 invoke 时 selector 变野指针崩溃），msgSend 直调稳定。
             char *typeAttr = property_copyAttributeValue(prop, "T");
             if (typeAttr) {
-                char encoding = typeAttr[0];
-                switch (encoding) {
-                    case 'c': { char arg = [value charValue];     [inv setArgument:&arg atIndex:2]; break; }
-                    case 'i': { int arg = [value intValue];       [inv setArgument:&arg atIndex:2]; break; }
-                    case 's': { short arg = [value shortValue];   [inv setArgument:&arg atIndex:2]; break; }
-                    case 'l': { long arg = [value longValue];     [inv setArgument:&arg atIndex:2]; break; }
-                    case 'q': { long long arg = [value longLongValue];            [inv setArgument:&arg atIndex:2]; break; }
-                    case 'C': { unsigned char arg = [value unsignedCharValue];    [inv setArgument:&arg atIndex:2]; break; }
-                    case 'I': { unsigned int arg = [value unsignedIntValue];      [inv setArgument:&arg atIndex:2]; break; }
-                    case 'S': { unsigned short arg = [value unsignedShortValue];  [inv setArgument:&arg atIndex:2]; break; }
-                    case 'L': { unsigned long arg = [value unsignedLongValue];    [inv setArgument:&arg atIndex:2]; break; }
-                    case 'Q': { unsigned long long arg = [value unsignedLongLongValue]; [inv setArgument:&arg atIndex:2]; break; }
-                    case 'f': { float arg = [value floatValue];   [inv setArgument:&arg atIndex:2]; break; }
-                    case 'd': { double arg = [value doubleValue]; [inv setArgument:&arg atIndex:2]; break; }
+                switch (typeAttr[0]) {
+                    case 'c': ((void (*)(id, SEL, char))objc_msgSend)(self, setterSel, (char)[value charValue]); break;
+                    case 'i': ((void (*)(id, SEL, int))objc_msgSend)(self, setterSel, (int)[value intValue]); break;
+                    case 's': ((void (*)(id, SEL, short))objc_msgSend)(self, setterSel, (short)[value shortValue]); break;
+                    case 'l': ((void (*)(id, SEL, long))objc_msgSend)(self, setterSel, (long)[value longValue]); break;
+                    case 'q': ((void (*)(id, SEL, long long))objc_msgSend)(self, setterSel, (long long)[value longLongValue]); break;
+                    case 'C': ((void (*)(id, SEL, unsigned char))objc_msgSend)(self, setterSel, (unsigned char)[value unsignedCharValue]); break;
+                    case 'I': ((void (*)(id, SEL, unsigned int))objc_msgSend)(self, setterSel, (unsigned int)[value unsignedIntValue]); break;
+                    case 'S': ((void (*)(id, SEL, unsigned short))objc_msgSend)(self, setterSel, (unsigned short)[value unsignedShortValue]); break;
+                    case 'L': ((void (*)(id, SEL, unsigned long))objc_msgSend)(self, setterSel, (unsigned long)[value unsignedLongValue]); break;
+                    case 'Q': ((void (*)(id, SEL, unsigned long long))objc_msgSend)(self, setterSel, (unsigned long long)[value unsignedLongLongValue]); break;
+                    case 'f': ((void (*)(id, SEL, float))objc_msgSend)(self, setterSel, (float)[value floatValue]); break;
+                    case 'd': ((void (*)(id, SEL, double))objc_msgSend)(self, setterSel, (double)[value doubleValue]); break;
                     case 'D': {
-                        long double arg;
+                        long double arg = 0;
                         if (@available(iOS 11.0, *)) {
                             [value getValue:&arg size:sizeof(long double)];
                         } else {
                             [value getValue:&arg];
                         }
-                        [inv setArgument:&arg atIndex:2];
+                        ((void (*)(id, SEL, long double))objc_msgSend)(self, setterSel, arg);
                         break;
                     }
-                    case 'B': { BOOL arg = [value boolValue];     [inv setArgument:&arg atIndex:2]; break; }
+                    case 'B': ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setterSel, (BOOL)[value boolValue]); break;
                     default: {
                         /* 对于指针、数组、结构体、联合体等复杂类型，无法直接用 NSNumber 装箱，
                          * 这里直接把入参 id 值当对象指针传进去，由调用端保证类型匹配。
                          * 若实际类型不符，运行期会崩溃，属于调用者责任。 */
-                        [inv setArgument:&value atIndex:2];
+                        ((void (*)(id, SEL, id))objc_msgSend)(self, setterSel, value);
                         break;
                     }
                 }
                 free(typeAttr);
-            } else {
-                [inv setArgument:&value atIndex:2];
+                return;
             }
-            
-            return [inv invoke];
         }
     }
     
@@ -811,7 +816,7 @@ static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
 /// 每次属性访问的翻译段从 ~35-85ns 降到 ~10-20ns。
 /// 并发模型：解析期在 _sel2PropsLock 临界区内写入 → release 发布表项 → 热路径无锁原子读（acquire）。
 /// 表项只写不删、容量固定 → 线性探测链永不被截断、结构永不改变，无锁读安全。
-#define CBModel_MAX_SEL_MAPS 32
+#define CBModel_MAX_CLASS_CHAIN 32
 
 typedef struct {
     _Atomic(SEL) sel;                    // 空槽 = NULL；解析后 = 该 selector（原子发布/读取）
@@ -853,11 +858,11 @@ static NSArray<NSString*> *CBMAllDynamicPropNames(Class cls) {
         return cached;
     }
     
-    Class chain[CBModel_MAX_SEL_MAPS];
+    Class chain[CBModel_MAX_CLASS_CHAIN];
     NSUInteger chainCount = 0;
     Class c = cls;
     while (c != NULL && c != CBModel.class) {
-        NSCAssert(chainCount < CBModel_MAX_SEL_MAPS, @"CBModel: 类链深度超过上限");
+        NSCAssert(chainCount < CBModel_MAX_CLASS_CHAIN, @"CBModel: 类链深度超过上限");
         chain[chainCount++] = c;
         c = class_getSuperclass(c);
     }
@@ -966,21 +971,35 @@ static NSInteger CBMIndexForPropName(Class cls, NSString *propName) {
     return -1;
 }
 
-static _Atomic(CBMSelMap *) _selMaps[CBModel_MAX_SEL_MAPS];
-static _Atomic(NSUInteger) _selMapCount;
-
 static NSUInteger CBMSelHash(SEL sel) {
     // SEL 是进程内唯一指针且通常 16 字节对齐：先右移去低位零，再乘黄金比例常数打散
     return (NSUInteger)(((uintptr_t)sel >> 4) * 2654435761u);
 }
 
-/// 类 → 表 查找（无锁）：_selMapCount 的 release/acquire 保证 [0, count) 内表指针已完整发布
+/// 类表数组：COW（copy-on-write）自动增长，支持插件化场景运行中动态注册新类。
+/// 容量不足时在解析锁内分配 2 倍新数组、拷贝、release 发布新指针；旧数组**永不释放**
+/// （热路径可能仍持有旧指针，延迟释放不可行；容量 2 倍增长，历史数组总大小 < 2× 最终容量，可忽略）。
+static _Atomic(CBMSelMap **) _selMaps;
+static _Atomic(NSUInteger) _selMapCount;
+static _Atomic(NSUInteger) _selMapCapacity;
+
+/// 类 → 表 查找（无锁）：先原子读数组指针再扫 [0, count)。
+/// 元素普通读即可：写入在锁内且 count/指针 release 发布后热路径才可见（release/acquire 链），
+/// 旧数组发布后只读（迁移只拷贝不写旧数组）——无数据竞争。
+/// NULL 检查覆盖"迁移窗口内旧数组的未写入槽位"；miss 时重读指针重试一次（仅迁移窗口内发生）。
 static inline CBMSelMap *CBMSelMapForClass(Class cls) {
-    NSUInteger count = atomic_load_explicit(&_selMapCount, memory_order_acquire);
-    for (NSUInteger i = 0; i < count; i++) {
-        CBMSelMap *map = atomic_load_explicit(&_selMaps[i], memory_order_acquire);
-        if (map->owner == cls) {
-            return map;
+    for (;;) {
+        CBMSelMap **maps = atomic_load_explicit(&_selMaps, memory_order_acquire);
+        NSUInteger count = atomic_load_explicit(&_selMapCount, memory_order_acquire);
+        for (NSUInteger i = 0; i < count; i++) {
+            CBMSelMap *map = maps[i];
+            if (map != NULL && map->owner == cls) {
+                return map;
+            }
+        }
+        // 迁移窗口：期间指针被替换则重试；否则确定为 miss（maps 为 NULL 时 count 必为 0）
+        if (atomic_load_explicit(&_selMaps, memory_order_acquire) == maps) {
+            break;
         }
     }
     return NULL;
@@ -995,6 +1014,7 @@ static inline CBMSelMap *CBMSelMapForClass(Class cls) {
 /// propIndex = 属性在 cls 属性列表中的位置（resolveInstanceMethod/forwardInvocation 扫描时即得），
 /// 槽下标 = baseIndex(类链前缀偏移) + propIndex。
 static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSInteger propIndex) {
+    // 确保 cls 的表已注册（锁内；类表数组容量不足时 COW 迁移——热路径无锁读旧数组安全）
     CBMSelMap *map = CBMSelMapForClass(cls);
     if (map == NULL) {
         NSUInteger propCount = CBMDynamicPropCount(cls);
@@ -1009,10 +1029,22 @@ static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSIn
         map->mask = capacity - 1;
         map->baseIndex = CBMSelMapBaseIndex(cls);
         
-        NSUInteger idx = atomic_load_explicit(&_selMapCount, memory_order_relaxed);
-        NSCAssert(idx < CBModel_MAX_SEL_MAPS, @"CBModel: 模型类数量超过上限 %d", CBModel_MAX_SEL_MAPS);
-        atomic_store_explicit(&_selMaps[idx], map, memory_order_release);
-        atomic_store_explicit(&_selMapCount, idx + 1, memory_order_release);
+        NSUInteger count = atomic_load_explicit(&_selMapCount, memory_order_relaxed);
+        NSUInteger cap = atomic_load_explicit(&_selMapCapacity, memory_order_relaxed);
+        CBMSelMap **maps = atomic_load_explicit(&_selMaps, memory_order_relaxed);
+        if (count >= cap) {
+            NSUInteger newCap = MAX(cap * 2, 8);
+            CBMSelMap **newMaps = calloc(newCap, sizeof(CBMSelMap *));
+            if (count > 0) {
+                memcpy(newMaps, maps, count * sizeof(CBMSelMap *));
+            }
+            atomic_store_explicit(&_selMapCapacity, newCap, memory_order_release);
+            atomic_store_explicit(&_selMaps, newMaps, memory_order_release);
+            maps = newMaps;
+            // 旧数组不释放（热路径可能仍持有旧指针）
+        }
+        maps[count] = map;   // 锁内普通写，count release 发布后热路径可见
+        atomic_store_explicit(&_selMapCount, count + 1, memory_order_release);
     }
     
     // 探测写入：先写 propName/index（锁内普通写），最后 release 发布 sel → 读者 acquire 命中即见完整表项。
@@ -1090,11 +1122,11 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
     os_unfair_lock_lock(&_initLock);
     if (!atomic_load_explicit(&_slotsReady, memory_order_acquire)) {
         // 收集类链（子→父），上限与 _selMaps 一致
-        Class chain[CBModel_MAX_SEL_MAPS];
+        Class chain[CBModel_MAX_CLASS_CHAIN];
         NSUInteger chainCount = 0;
         Class cls = object_getClass(self);
         while (cls != NULL && cls != CBModel.class) {
-            NSCAssert(chainCount < CBModel_MAX_SEL_MAPS, @"CBModel: 类链深度超过上限");
+            NSCAssert(chainCount < CBModel_MAX_CLASS_CHAIN, @"CBModel: 类链深度超过上限");
             chain[chainCount++] = cls;
             cls = class_getSuperclass(cls);
         }
@@ -1342,7 +1374,6 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
 
 #pragma mark - 动态实现方法
 + (BOOL)resolveInstanceMethod:(SEL)sel {
-    
     if (![self isSubclassOfClass:CBModel.class]) {
         return [super resolveInstanceMethod:sel];
     }
@@ -1393,15 +1424,12 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                     BOOL isAtomic = (attrValue == NULL);
                     free(attrValue); attrValue = NULL;
                     
-                    // 动态添加方法实现（映射与 IMP 原子发布，见 installDynamicMethod:）
+                    // 动态添加方法实现（映射与 IMP 原子发布，直接调 C 函数——
+                    // 解析回调内以消息方式调用同类类方法会命中转发路径，见 CBMInstallDynamicMethod 注释）
                     IMP impForProp = imp_for_property(NO, isAtomic, property_getAttributes(curProp));
                     if (getterTypes &&
                         impForProp &&
-                        [cls installDynamicMethod:sel
-                                             imp:impForProp
-                                           types:getterTypes
-                                        propName:targetPropName
-                                       propIndex:propIndex]) {
+                        CBMInstallDynamicMethod(cls, sel, impForProp, getterTypes, targetPropName, propIndex)) {
                         resolve = YES;
                         break;
                     }
@@ -1442,15 +1470,12 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                     BOOL isAtomic = (attrValue == NULL);
                     free(attrValue); attrValue = NULL;
                     
-                    // 动态添加方法实现（映射与 IMP 原子发布，见 installDynamicMethod:）
+                    // 动态添加方法实现（映射与 IMP 原子发布，直接调 C 函数——
+                    // 解析回调内以消息方式调用同类类方法会命中转发路径，见 CBMInstallDynamicMethod 注释）
                     IMP impForProp = imp_for_property(YES, isAtomic, property_getAttributes(curProp));
                     if (setterTypes &&
                         impForProp &&
-                        [cls installDynamicMethod:sel
-                                             imp:impForProp
-                                           types:setterTypes
-                                        propName:targetPropName
-                                       propIndex:propIndex]) {
+                        CBMInstallDynamicMethod(cls, sel, impForProp, setterTypes, targetPropName, propIndex)) {
                         resolve = YES;
                         break;
                     }

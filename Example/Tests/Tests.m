@@ -7,6 +7,7 @@
 //
 
 @import XCTest;
+#import <objc/message.h>
 #import "TestModel.h"
 #import "YYTestModel.h"
 @import YYModel;
@@ -1331,6 +1332,28 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     ClassPropModel *model = [[ClassPropModel alloc] init];
     XCTAssertFalse([model respondsToSelector:@selector(sharedName)], @"实例不应响应类属性 getter");
     XCTAssertFalse([model respondsToSelector:@selector(setSharedName:)], @"实例不应响应类属性 setter");
+}
+
+// 验证插件化场景：运行中动态创建 CBModel 子类（objc_allocateClassPair + 手动加 @dynamic 属性），
+// 触发类表 COW 自动增长（首容量 8，累计 20+ 个类必然触发 8→16→32 多次迁移）
+- (void)testPluginDynamicClassRegistration {
+    for (int i = 0; i < 20; i++) {
+        NSString *className = [NSString stringWithFormat:@"CBTestDynModel%d", i];
+        Class cls = objc_allocateClassPair(CBModel.class, className.UTF8String, 0);
+        XCTAssertNotNil(cls, @"动态类创建失败");
+        
+        // 手动添加带 @dynamic(D) 标记的属性（模拟插件 bundle 的模型类）
+        objc_property_attribute_t typeAttr = {"T", "i"};
+        objc_property_attribute_t dynAttr = {"D", ""};
+        objc_property_attribute_t attrs[] = {typeAttr, dynAttr};
+        XCTAssertTrue(class_addProperty(cls, "dynValue", attrs, 2), @"动态属性添加失败");
+        objc_registerClassPair(cls);
+        
+        // 触碰属性：触发 resolveInstanceMethod（建表 + COW 迁移）+ KVC 读写
+        id model = [[cls alloc] init];
+        [model setValue:@(i) forKey:@"dynValue"];
+        XCTAssertEqual([[model valueForKey:@"dynValue"] integerValue], i, @"动态类属性读写应该正常");
+    }
 }
 
 @end
