@@ -436,6 +436,171 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
     return nil;
 }
 
+#pragma mark - 类属性（P2：ObjC class property）
+// 前置声明（定义在文件后部：selector 映射区 / 属性存储区，宏在文件前部展开需要）
+static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel);
+static inline NSString *CBMClassPropNameForSel(Class cls, SEL sel);
+static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop);
+static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName);
+
+/// 类属性 getter/setter：self 是类对象（Class），值存储 per-class（静态字典 + 锁，低频路径）。
+/// 标量/指针/SEL 走 NSValue 装箱（类属性不是热路径，不做裸字节优化）。
+#define CLASS_PROP_IMP(typeName, _TYPE_)                                                  \
+static _TYPE_ _class_getter_for_##typeName##_(Class self, SEL _cmd) {                     \
+    NSString *p = CBMClassPropNameForSel(self, _cmd);                                     \
+    if (p == nil) { return (_TYPE_)0; }                                                   \
+    CBMPropertySlot *slot = CBMClassPropSlot(self, p);                                    \
+    _TYPE_ v;                                                                             \
+    memset(&v, 0, sizeof(_TYPE_));   /* 未设置过时 _boxedValue 为 nil，getValue 无操作，保持零值 */ \
+    if (@available(iOS 11.0, *)) {                                                        \
+        [slot->_boxedValue getValue:&v size:sizeof(_TYPE_)];                              \
+    } else {                                                                              \
+        [slot->_boxedValue getValue:&v];                                                  \
+    }                                                                                     \
+    return v;                                                                             \
+}                                                                                         \
+static void _class_setter_for_##typeName##_(Class self, SEL _cmd, _TYPE_ value) {         \
+    NSString *p = CBMClassPropNameForSel(self, _cmd);                                     \
+    if (p == nil) { return; }                                                             \
+    CBMPropertySlot *slot = CBMClassPropSlot(self, p);                                    \
+    slot->_boxedValue = [NSValue value:&value withObjCType:@encode(_TYPE_)];              \
+}
+
+static id _class_getter_for_obj_strong_(Class self, SEL _cmd) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return nil; }
+    return CBMClassPropSlot(self, p)->_strongValue;
+}
+
+static void _class_setter_for_obj_strong_(Class self, SEL _cmd, id value) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return; }
+    CBMClassPropSlot(self, p)->_strongValue = value;
+}
+
+static void _class_setter_for_obj_copy_(Class self, SEL _cmd, id value) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return; }
+    CBMClassPropSlot(self, p)->_strongValue = [value copy];
+}
+
+static id _class_getter_for_obj_weak_(Class self, SEL _cmd) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return nil; }
+    return CBMClassPropSlot(self, p)->_weakValue;
+}
+
+static void _class_setter_for_obj_weak_(Class self, SEL _cmd, id value) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return; }
+    CBMClassPropSlot(self, p)->_weakValue = value;
+}
+
+CLASS_PROP_IMP(char, char);
+CLASS_PROP_IMP(short, short);
+CLASS_PROP_IMP(int, int);
+CLASS_PROP_IMP(long, long);
+CLASS_PROP_IMP(longLong, long long);
+CLASS_PROP_IMP(unsignedChar, unsigned char);
+CLASS_PROP_IMP(unsignedInt, unsigned int);
+CLASS_PROP_IMP(unsignedShort, unsigned short);
+CLASS_PROP_IMP(unsignedLong, unsigned long);
+CLASS_PROP_IMP(unsignedLongLong, unsigned long long);
+CLASS_PROP_IMP(float, float);
+CLASS_PROP_IMP(double, double);
+CLASS_PROP_IMP(longDouble, long double);
+CLASS_PROP_IMP(bool, bool);
+
+static void* _class_getter_for_pointer_(Class self, SEL _cmd) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return NULL; }
+    CBMPropertySlot *slot = CBMClassPropSlot(self, p);
+    return [slot->_boxedValue pointerValue];
+}
+
+static void _class_setter_for_pointer_(Class self, SEL _cmd, const void *value) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return; }
+    CBMClassPropSlot(self, p)->_boxedValue = [NSValue valueWithPointer:value];
+}
+
+static void* _class_getter_for_sel_(Class self, SEL _cmd) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return NULL; }
+    CBMPropertySlot *slot = CBMClassPropSlot(self, p);
+    return (__bridge void *)[slot->_boxedValue nonretainedObjectValue];
+}
+
+static void _class_setter_for_sel_(Class self, SEL _cmd, __unsafe_unretained id value) {
+    NSString *p = CBMClassPropNameForSel(self, _cmd);
+    if (p == nil) { return; }
+    CBMClassPropSlot(self, p)->_boxedValue = [NSValue valueWithNonretainedObject:value];
+}
+
+/// 类属性的 IMP 选择：支持对象/标量/指针/SEL；结构体/联合体/C 数组返回 nil（类属性暂不支持转发）
+static IMP imp_for_class_property(BOOL isSetter, const char *propAttributes) {
+    char *typeEncoding = strchr(propAttributes, 'T');
+    switch (*(typeEncoding + 1)) {
+        case '@': {
+            char *attr;
+            if ((attr = strstr(strchr(typeEncoding, ','), ",C"))) {
+                return isSetter ? (IMP)_class_setter_for_obj_copy_ : (IMP)_class_getter_for_obj_strong_;
+            } else if ((attr = strstr(strchr(typeEncoding, ','), ",W"))) {
+                return isSetter ? (IMP)_class_setter_for_obj_weak_ : (IMP)_class_getter_for_obj_weak_;
+            } else {
+                return isSetter ? (IMP)_class_setter_for_obj_strong_ : (IMP)_class_getter_for_obj_strong_;
+            }
+        }
+        case 'c': return isSetter ? (IMP)_class_setter_for_char_ : (IMP)_class_getter_for_char_;
+        case 'i': return isSetter ? (IMP)_class_setter_for_int_ : (IMP)_class_getter_for_int_;
+        case 's': return isSetter ? (IMP)_class_setter_for_short_ : (IMP)_class_getter_for_short_;
+        case 'l': return isSetter ? (IMP)_class_setter_for_long_ : (IMP)_class_getter_for_long_;
+        case 'q': return isSetter ? (IMP)_class_setter_for_longLong_ : (IMP)_class_getter_for_longLong_;
+        case 'C': return isSetter ? (IMP)_class_setter_for_unsignedChar_ : (IMP)_class_getter_for_unsignedChar_;
+        case 'I': return isSetter ? (IMP)_class_setter_for_unsignedInt_ : (IMP)_class_getter_for_unsignedInt_;
+        case 'S': return isSetter ? (IMP)_class_setter_for_unsignedShort_ : (IMP)_class_getter_for_unsignedShort_;
+        case 'L': return isSetter ? (IMP)_class_setter_for_unsignedLong_ : (IMP)_class_getter_for_unsignedLong_;
+        case 'Q': return isSetter ? (IMP)_class_setter_for_unsignedLongLong_ : (IMP)_class_getter_for_unsignedLongLong_;
+        case 'f': return isSetter ? (IMP)_class_setter_for_float_ : (IMP)_class_getter_for_float_;
+        case 'd': return isSetter ? (IMP)_class_setter_for_double_ : (IMP)_class_getter_for_double_;
+        case 'D': return isSetter ? (IMP)_class_setter_for_longDouble_ : (IMP)_class_getter_for_longDouble_;
+        case 'B': return isSetter ? (IMP)_class_setter_for_bool_ : (IMP)_class_getter_for_bool_;
+        case '^': return isSetter ? (IMP)_class_setter_for_pointer_ : (IMP)_class_getter_for_pointer_;
+        case ':': return isSetter ? (IMP)_class_setter_for_sel_ : (IMP)_class_getter_for_sel_;
+        default:  return nil;
+    }
+}
+
+/// 类属性查询：沿 metaclass 链查快查表（类属性表注册在 metaclass 上）。
+/// 直接复用 CBMPropInfoForSel（含 nil 保护的 superclass 链遍历，metaclass 链安全）
+static inline NSString *CBMClassPropNameForSel(Class cls, SEL sel) {
+    return CBMPropInfoForSel(object_getClass(cls), sel).propName;
+}
+
+/// 类属性槽：per-class 存储（静态字典 + 锁，低频路径），首次访问时懒创建。
+/// 每个（类, 属性名）一个槽——子类经继承调用时创建自己的槽（与 ObjC 类属性 per-class 存储语义一致）
+static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
+    static os_unfair_lock s_lock = OS_UNFAIR_LOCK_INIT;
+    static NSMutableDictionary<NSString*, CBMPropertySlot*> *s_slots;
+    os_unfair_lock_lock(&s_lock);
+    if (s_slots == nil) {
+        s_slots = [NSMutableDictionary dictionary];
+    }
+    NSString *key = [NSString stringWithFormat:@"%@.%@", NSStringFromClass(cls), propName];
+    CBMPropertySlot *slot = s_slots[key];
+    if (slot == nil) {
+        slot = [[CBMPropertySlot alloc] init];
+        // 语义解析：类属性声明在 metaclass 的属性列表里
+        objc_property_t prop = class_getProperty(object_getClass(cls), propName.UTF8String);
+        if (prop != NULL) {
+            CBMSetupSlotSemantics(slot, prop);
+        }
+        s_slots[key] = slot;
+    }
+    os_unfair_lock_unlock(&s_lock);
+    return slot;
+}
+
 @implementation CBMPropertySlot
 @end
 
@@ -763,7 +928,8 @@ static NSUInteger CBMSelMapBaseIndex(Class cls) {
     return base;
 }
 
-/// 热路径查询：沿类链查快表，一次拿 {propName, index}（无锁原子读）
+/// 热路径查询：沿类链查快表，一次拿 {propName, index}（无锁原子读）。
+/// 链终止：实例链到 CBModel 止；metaclass 链（类属性查询）到 nil 止——nil 保护防死循环。
 static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel) {
     do {
         CBMSelMap *map = CBMSelMapForClass(cls);
@@ -780,7 +946,7 @@ static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel) {
                 slot = (slot + 1) & map->mask;
             }
         }
-    } while ((cls = class_getSuperclass(cls)) != CBModel.class);
+    } while (cls != nil && (cls = class_getSuperclass(cls)) != CBModel.class);
     return (CBMPropInfo){nil, -1};
 }
 
@@ -871,23 +1037,52 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
 /// "IMP 已发布但映射未写入"的窗口：其他线程立即调用 setter 会拿到 nil 属性名而崩溃
 /// （映射与 IMP 的可见性由 _sel2PropsLock 的 happens-before 保证）。
 /// 返回是否成功添加（已存在映射则返回 NO，由调用方交给 runtime 重试查找）。
-+ (BOOL)installDynamicMethod:(SEL)sel
-                        imp:(IMP)imp
-                      types:(const char*)types
-                   propName:(NSString*)propName
-                  propIndex:(NSInteger)propIndex {
+/// 以 C 函数形式提供，实例属性与类属性两条路径共用：
+/// 实测在 resolveClassMethod 内以消息发送方式调用同类类方法（+installDynamicMethod:）
+/// 会命中转发路径（方法缓存问题）导致 unrecognized selector，故统一直接函数调用。
+static BOOL CBMInstallDynamicMethod(Class cls, SEL sel, IMP imp, const char *types,
+                                    NSString *propName, NSInteger propIndex) {
     os_unfair_lock_lock(&_sel2PropsLock);
     BOOL added = NO;
-    if (CBMPropInfoForSel(self, sel).index < 0) {
-        CBMSelMapEnsureAndWrite(self, sel, propName, propIndex);   // 快查表（热路径用）
-        added = class_addMethod(self, sel, imp, types);
+    if (CBMPropInfoForSel(cls, sel).index < 0) {
+        CBMSelMapEnsureAndWrite(cls, sel, propName, propIndex);   // 快查表（热路径用）
+        added = class_addMethod(cls, sel, imp, types);
         // 竞争失败（其他线程已添加同名方法）时无需回滚：映射内容一致，重复写入无害
     }
     os_unfair_lock_unlock(&_sel2PropsLock);
     return added;
 }
 
++ (BOOL)installDynamicMethod:(SEL)sel
+                        imp:(IMP)imp
+                      types:(const char*)types
+                   propName:(NSString*)propName
+                  propIndex:(NSInteger)propIndex {
+    return CBMInstallDynamicMethod(self, sel, imp, types, propName, propIndex);
+}
+
 #pragma mark - 属性存储（槽数组，v1.4 Phase 2 组件 B）
+/// 按属性编码设置槽的存储语义与原子性（ensureSlotArray 与类属性槽共用）
+static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
+    char *typeAttr = property_copyAttributeValue(prop, "T");
+    char *nonatomicAttr = property_copyAttributeValue(prop, "N");
+    slot->atomic = (nonatomicAttr == NULL);
+    free(nonatomicAttr);
+    if (typeAttr != NULL && typeAttr[0] == '@') {
+        char *weakAttr = property_copyAttributeValue(prop, "W");
+        slot->storage = weakAttr ? CBMPropStorageWeak : CBMPropStorageStrong;
+        free(weakAttr);
+    } else if (typeAttr != NULL &&
+               (typeAttr[0] == '{' || typeAttr[0] == '(' || typeAttr[0] == '[')) {
+        // 结构体/联合体/C 数组：大小不定，保留 NSValue 装箱
+        slot->storage = CBMPropStorageBoxed;
+    } else {
+        // 标量/指针/SEL：裸字节存储（v1.4 2.5，long double 最大 16B 在容量内）
+        slot->storage = CBMPropStorageRaw;
+    }
+    free(typeAttr);
+}
+
 /// 槽数组初始化：容量 = 实例类链各声明类 @dynamic 属性总数（与快查表 baseIndex 同一枚举逻辑），
 /// 为每个属性预创建槽对象并按属性编码设置存储语义。
 /// 锁内双检 + _slotsReady 原子发布：写 _slotArray → release store → 热路径 acquire load 后无锁读。
@@ -922,24 +1117,7 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
                 free(attr);
                 
                 CBMPropertySlot *slot = [[CBMPropertySlot alloc] init];
-                char *typeAttr = property_copyAttributeValue(list[j], "T");
-                char *nonatomicAttr = property_copyAttributeValue(list[j], "N");
-                slot->atomic = (nonatomicAttr == NULL);
-                free(nonatomicAttr);
-                if (typeAttr != NULL && typeAttr[0] == '@') {
-                    char *weakAttr = property_copyAttributeValue(list[j], "W");
-                    slot->storage = weakAttr ? CBMPropStorageWeak : CBMPropStorageStrong;
-                    free(weakAttr);
-                } else if (typeAttr != NULL &&
-                           (typeAttr[0] == '{' || typeAttr[0] == '(' || typeAttr[0] == '[')) {
-                    // 结构体/联合体/C 数组：大小不定，保留 NSValue 装箱
-                    slot->storage = CBMPropStorageBoxed;
-                } else {
-                    // 标量/指针/SEL：裸字节存储（v1.4 2.5，long double 最大 16B 在容量内）
-                    slot->storage = CBMPropStorageRaw;
-                }
-                free(typeAttr);
-                
+                CBMSetupSlotSemantics(slot, list[j]);
                 [array addObject:slot];
             }
             free(list);
@@ -1231,6 +1409,15 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
             }
             
             { // setter处理
+                // readonly 属性（属性编码含 'R'）只注入 getter、不注入 setter，
+                // 调用 setter 走 unrecognized selector（标准 ObjC 语义）
+                char *readonlyAttr = property_copyAttributeValue(curProp, "R");
+                BOOL isReadonly = (readonlyAttr != NULL);
+                free(readonlyAttr);
+                if (isReadonly) {
+                    continue;
+                }
+                
                 // 提取属性的setter方法名
                 NSString* propSetterName = nil; {
                     attrValue = property_copyAttributeValue(curProp, "S");
@@ -1276,6 +1463,99 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
     } while ((cls = [cls superclass]) != CBModel.class);
     
     return [super resolveInstanceMethod:sel];
+}
+
+#pragma mark - 类方法解析（类属性，P2）
+/// 类属性解析：类属性的 getter/setter 是类方法（注册在 metaclass 上）。
+/// 遍历 metaclass 链的属性列表（类属性存储于 metaclass），与实例属性同一套
+/// getter/setter 名匹配；映射原子发布走 CBMInstallDynamicMethod 直接函数调用
+/// （resolveClassMethod 内以消息方式调用同类类方法会命中转发路径，见该函数注释）。
++ (BOOL)resolveClassMethod:(SEL)sel {
+    if (![self isSubclassOfClass:CBModel.class]) {
+        return [super resolveClassMethod:sel];
+    }
+    
+    BOOL resolve = NO;
+    NSString *targetSelName = NSStringFromSelector(sel);
+    Class cls = object_getClass(self);   // metaclass
+    do {
+        uint propCount;
+        objc_property_t *propList = class_copyPropertyList(cls, &propCount);
+        objc_property_t curProp;
+        NSInteger dynIndex = 0;
+        for (int j = 0; j < propCount; j++) {
+            curProp = propList[j];
+            // 判断是不是动态属性，dynamic 修饰
+            char *attrValue = property_copyAttributeValue(curProp, "D");
+            free(attrValue); if (attrValue == NULL) { continue; } attrValue = NULL;
+            NSInteger propIndex = dynIndex++;
+            
+            // 提取属性名
+            const char *propName = property_getName(curProp);
+            NSString *targetPropName = [NSString stringWithUTF8String:propName];
+            
+            { // getter处理
+                NSString *propGetterName = nil;
+                attrValue = property_copyAttributeValue(curProp, "G");
+                if (attrValue) {
+                    propGetterName = [NSString stringWithFormat:@"%s", attrValue];
+                    free(attrValue); attrValue = NULL;
+                } else {
+                    propGetterName = [NSString stringWithFormat:@"%s", propName];
+                }
+                if ([targetSelName isEqualToString:propGetterName]) {
+                    attrValue = property_copyAttributeValue(curProp, "T");
+                    const char *getterTypes = [NSString stringWithFormat:@"%s:", attrValue].UTF8String;
+                    free(attrValue); attrValue = NULL;
+                    
+                    IMP impForProp = imp_for_class_property(NO, property_getAttributes(curProp));
+                    if (getterTypes &&
+                        impForProp &&
+                        CBMInstallDynamicMethod(cls, sel, impForProp, getterTypes, targetPropName, propIndex)) {
+                        resolve = YES;
+                        break;
+                    }
+                }
+            }
+            
+            { // setter处理
+                // readonly 类属性只注入 getter（与实例 readonly 语义一致）
+                char *readonlyAttr = property_copyAttributeValue(curProp, "R");
+                BOOL isReadonly = (readonlyAttr != NULL);
+                free(readonlyAttr);
+                if (isReadonly) {
+                    continue;
+                }
+                
+                NSString *propSetterName = nil;
+                attrValue = property_copyAttributeValue(curProp, "S");
+                if (attrValue) {
+                    propSetterName = [NSString stringWithFormat:@"%s", attrValue];
+                    free(attrValue); attrValue = NULL;
+                } else {
+                    propSetterName = [NSString stringWithFormat:@"set%c%s:", propName[0] & ~0x20, propName + 1];
+                }
+                if ([targetSelName isEqualToString:propSetterName]) {
+                    attrValue = property_copyAttributeValue(curProp, "T");
+                    const char *setterTypes = [NSString stringWithFormat:@"v:%s:", attrValue].UTF8String;
+                    free(attrValue); attrValue = NULL;
+                    
+                    IMP impForProp = imp_for_class_property(YES, property_getAttributes(curProp));
+                    if (setterTypes &&
+                        impForProp &&
+                        CBMInstallDynamicMethod(cls, sel, impForProp, setterTypes, targetPropName, propIndex)) {
+                        resolve = YES;
+                        break;
+                    }
+                }
+            }
+        }
+        // 释放属性列表
+        free(propList); propList = NULL;
+        if (resolve) { return YES; }
+    } while ((cls = [cls superclass]) != object_getClass(CBModel.class));
+    
+    return [super resolveClassMethod:sel];
 }
 
 #pragma mark - 消息转发签名
@@ -1335,6 +1615,15 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
                 free(typeAttr);
                 free(propList);
                 return signature;
+            }
+            
+            // readonly 属性（属性编码含 'R'）不提供 setter 签名（只注入 getter 语义）
+            char *readonlyAttr = property_copyAttributeValue(curProp, "R");
+            BOOL isReadonly = (readonlyAttr != NULL);
+            free(readonlyAttr);
+            if (isReadonly) {
+                free(typeAttr);
+                continue;
             }
             
             if ([targetSelName isEqualToString:propSetterName]) {
@@ -1430,6 +1719,14 @@ static os_unfair_lock _sel2PropsLock = OS_UNFAIR_LOCK_INIT;
             }
             
             { // setter处理
+                // readonly 属性（属性编码含 'R'）只注入 getter、不注入 setter（转发路径同样跳过）
+                char *readonlyAttr = property_copyAttributeValue(curProp, "R");
+                BOOL isReadonly = (readonlyAttr != NULL);
+                free(readonlyAttr);
+                if (isReadonly) {
+                    continue;
+                }
+                
                 // 提取属性的setter方法名
                 NSString* propSetterName = nil; {
                     attrValue = property_copyAttributeValue(curProp, "S");

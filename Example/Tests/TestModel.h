@@ -79,6 +79,12 @@
 @property (nonatomic, getter=isCurrent) BOOL current;
 @property (nonatomic, setter=setSpecialName:) NSString *specialName;
 
+#pragma mark - readonly 属性（P2：只注入 getter、不注入 setter）
+
+@property (nonatomic, readonly) NSInteger readonlyIntValue;
+@property (nonatomic, readonly, strong) NSString *readonlyString;
+@property (nonatomic, readonly) CGPoint readonlyPointValue;
+
 @end
 
 #pragma mark - 类级缓存竞态测试模型（P0-2.3）
@@ -118,4 +124,15 @@
 
 @interface ProtocolPropModel : CBModel <CBProtocolPropTestProtocol>
 @property (nonatomic) NSInteger ownInt;
+@end
+
+#pragma mark - 类属性测试模型（P2）
+
+/// 类属性（class property）：getter/setter 是类方法，由 resolveClassMethod: 注入，值 per-class 存储
+@interface ClassPropModel : CBModel
+@property (class, nonatomic, strong) NSString *sharedName;
+@property (class, nonatomic, copy) NSString *sharedCopy;
+@property (class, nonatomic) NSInteger sharedCount;
+@property (class, nonatomic, weak) id sharedWeak;
+@property (class, nonatomic, readonly) NSInteger sharedReadonly;
 @end

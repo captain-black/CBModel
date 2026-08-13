@@ -45,6 +45,10 @@
 @dynamic current;
 @dynamic specialName;
 
+@dynamic readonlyIntValue;
+@dynamic readonlyString;
+@dynamic readonlyPointValue;
+
 @end
 
 @implementation ResolveRaceModel
@@ -76,5 +80,15 @@
 @dynamic protocolInt;
 @dynamic protocolString;
 @dynamic ownInt;
+
+@end
+
+@implementation ClassPropModel
+
+@dynamic sharedName;
+@dynamic sharedCopy;
+@dynamic sharedCount;
+@dynamic sharedWeak;
+@dynamic sharedReadonly;
 
 @end

@@ -1255,4 +1255,82 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     XCTAssertFalse([a isEqual:b], @"协议字符串属性不同应该不相等");
 }
 
+#pragma mark - readonly 属性测试（P2：只注入 getter、不注入 setter）
+
+// 验证 readonly 属性只注入 getter：getter 可用且返回默认值（标量/对象/结构体）。
+// 注：结构体属性走消息转发（无 IMP），respondsToSelector 不认转发方法，需直接调用验证
+- (void)testReadonlyGetterInjected {
+    TestModel *model = [[TestModel alloc] init];
+    XCTAssertTrue([model respondsToSelector:@selector(readonlyIntValue)], @"readonly 属性的 getter 应该被注入");
+    XCTAssertTrue([model respondsToSelector:@selector(readonlyString)], @"readonly 属性的 getter 应该被注入");
+    XCTAssertEqual(model.readonlyIntValue, 0, @"readonly 属性应返回默认值");
+    XCTAssertNil(model.readonlyString, @"readonly 属性应返回默认值");
+    XCTAssertTrue(CGPointEqualToPoint(model.readonlyPointValue, CGPointZero), @"readonly 结构体属性 getter 应经转发返回默认值");
+}
+
+// 验证 readonly 属性不注入 setter：不响应 setter、无 setter 方法签名（标量 + 结构体）
+- (void)testReadonlySetterNotInjected {
+    TestModel *model = [[TestModel alloc] init];
+    XCTAssertFalse([model respondsToSelector:@selector(setReadonlyIntValue:)], @"readonly 属性的 setter 不应被注入");
+    XCTAssertFalse([model respondsToSelector:@selector(setReadonlyString:)], @"readonly 属性的 setter 不应被注入");
+    XCTAssertFalse([model respondsToSelector:@selector(setReadonlyPointValue:)], @"readonly 结构体属性的 setter 不应被注入");
+    XCTAssertNil([model methodSignatureForSelector:@selector(setReadonlyIntValue:)], @"readonly 属性的 setter 不应有方法签名");
+    XCTAssertNil([model methodSignatureForSelector:@selector(setReadonlyPointValue:)], @"readonly 结构体属性的 setter 不应有方法签名");
+}
+
+// 验证 KVC 对 readonly 属性赋值抛 NSUnknownKeyException（标准 KVC 语义）
+- (void)testReadonlyKVCSetThrows {
+    TestModel *model = [[TestModel alloc] init];
+    XCTAssertThrows([model setValue:@(5) forKey:@"readonlyIntValue"], @"KVC 对 readonly 属性赋值应该抛异常");
+    XCTAssertThrows([model setValue:@"x" forKey:@"readonlyString"], @"KVC 对 readonly 属性赋值应该抛异常");
+}
+
+#pragma mark - 类属性测试（P2）
+
+// 验证类属性 getter/setter 注入与存取（对象 strong/copy/标量）
+- (void)testClassPropertyGetSet {
+    XCTAssertTrue([ClassPropModel respondsToSelector:@selector(sharedName)], @"类属性 getter 应该被注入");
+    XCTAssertTrue([ClassPropModel respondsToSelector:@selector(setSharedName:)], @"类属性 setter 应该被注入");
+    
+    [ClassPropModel setSharedName:@"全局名"];
+    XCTAssertEqualObjects([ClassPropModel sharedName], @"全局名", @"类属性存取应该正常");
+    
+    [ClassPropModel setSharedCount:42];
+    XCTAssertEqual([ClassPropModel sharedCount], 42, @"标量类属性存取应该正常");
+    
+    [ClassPropModel setSharedCopy:[[NSMutableString alloc] initWithString:@"copy值"]];
+    XCTAssertEqualObjects([ClassPropModel sharedCopy], @"copy值", @"copy 类属性应该复制值");
+}
+
+// 验证类属性默认值（未设置时为 0/nil；本用例字母序先于 testClassPropertyGetSet 执行）
+- (void)testClassPropertyDefaultValue {
+    XCTAssertEqual([ClassPropModel sharedCount], 0, @"类属性默认值应为 0");
+    XCTAssertNil([ClassPropModel sharedName], @"类属性默认值应为 nil");
+}
+
+// 验证 weak 类属性：对象释放后自动置 nil
+- (void)testClassPropertyWeak {
+    @autoreleasepool {
+        NSObject *obj = [[NSObject alloc] init];
+        [ClassPropModel setSharedWeak:obj];
+        XCTAssertEqual([ClassPropModel sharedWeak], obj, @"weak 类属性应该正常");
+        obj = nil;
+    }
+    XCTAssertNil([ClassPropModel sharedWeak], @"weak 类属性在对象释放后应为 nil");
+}
+
+// 验证 readonly 类属性：只注入 getter、不注入 setter
+- (void)testClassPropertyReadonly {
+    XCTAssertTrue([ClassPropModel respondsToSelector:@selector(sharedReadonly)], @"readonly 类属性 getter 应该被注入");
+    XCTAssertFalse([ClassPropModel respondsToSelector:@selector(setSharedReadonly:)], @"readonly 类属性 setter 不应被注入");
+    XCTAssertEqual([ClassPropModel sharedReadonly], 0, @"readonly 类属性应返回默认值");
+}
+
+// 验证类属性是类方法而非实例方法：实例不响应类属性 selector
+- (void)testClassPropertyNotOnInstance {
+    ClassPropModel *model = [[ClassPropModel alloc] init];
+    XCTAssertFalse([model respondsToSelector:@selector(sharedName)], @"实例不应响应类属性 getter");
+    XCTAssertFalse([model respondsToSelector:@selector(setSharedName:)], @"实例不应响应类属性 setter");
+}
+
 @end
