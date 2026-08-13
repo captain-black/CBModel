@@ -301,8 +301,9 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     XCTAssertTrue(CGRectGetWidth(model.atomicRectValue) >= 0, @"并发写入后结构体值应该有效");
 }
 
-// 验证 atomic 与 nonatomic 属性混合多线程并发写入（P0-2.1 容器竞态回归）：
-// 两类属性共享同一容器，并发写入不应损坏容器，结束后各属性值有效
+// 验证 atomic 与 nonatomic 属性并存时的并发安全（P0-2.1 容器竞态回归，v1.4 Phase 2 改写）：
+// 去锁重构后 non-atomic 属性为无锁槽（真 ivar 语义，并发写属使用者误用），
+// 故并发阶段只写 atomic 属性；non-atomic 属性在并发期间保持不被干扰
 - (void)testAtomicAndNonAtomicMixedConcurrentAccess {
     TestModel *warmup = [[TestModel alloc] init];
     warmup.intValue = 0;
@@ -314,29 +315,32 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     CBModel_WarmUpAtomicProps(warmup);
     
     TestModel *model = [[TestModel alloc] init];
+    // 并发前单线程设置 non-atomic 初值（预触达已由 warmup 完成，此处仅设初值）
+    model.intValue = 0;
+    model.strongString = @"";
+    model.rectValue = CGRectZero;
+    model.pointValue = CGPointZero;
     dispatch_group_t group = dispatch_group_create();
     
     for (int i = 0; i < 200; i++) {
         dispatch_group_enter(group);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            // atomic 与 nonatomic 属性共享同一个容器，并发写入不应损坏容器
             model.atomicIntValue = i;
-            model.intValue = i;
             model.atomicString = [NSString stringWithFormat:@"a%d", i];
-            model.strongString = [NSString stringWithFormat:@"s%d", i];
             for (int j = 1; j <= 8; j++) {
                 [model setValue:@(i * 1.0) forKey:[NSString stringWithFormat:@"atomicDoubleValue%d", j]];
             }
-            model.rectValue = CGRectMake(i, i, i, i);
-            model.pointValue = CGPointMake(i, i);
             dispatch_group_leave(group);
         });
     }
     
     dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    // 并发写 atomic 期间，non-atomic 槽（独立内存）不受干扰
+    XCTAssertEqual(model.intValue, 0, @"non-atomic 槽不应被 atomic 并发写入干扰");
+    XCTAssertEqualObjects(model.strongString, @"", @"non-atomic 槽不应被 atomic 并发写入干扰");
+    XCTAssertTrue(CGRectEqualToRect(model.rectValue, CGRectZero), @"non-atomic 结构体槽不应被干扰");
     XCTAssertTrue(model.atomicIntValue >= 0 && model.atomicIntValue < 200, @"并发写入后值应该有效");
     XCTAssertNotNil(model.atomicString, @"并发写入后字符串不应该为 nil");
-    XCTAssertNotNil(model.strongString, @"并发写入后字符串不应该为 nil");
 }
 
 #pragma mark - 类级缓存竞态回归测试（P0-2.3）
@@ -379,6 +383,18 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     XCTAssertTrue(model2.propD >= 0 && model2.propD < 40, @"并发首次解析后值应该有效");
     XCTAssertNotNil(model.strH, @"并发首次解析后字符串不应该为 nil");
     XCTAssertNotNil(model2.strF, @"并发首次解析后字符串不应该为 nil");
+}
+
+// 性能基准：标量属性读写吞吐（v1.4 Phase 1 快查表前后对比用，
+// 只测不走 forwardInvocation 的标量路径，XCTest measureBlock 自动统计 ns/op）
+- (void)testPropertyAccessPerformance {
+    TestModel *model = [[TestModel alloc] init];
+    [self measureBlock:^{
+        for (int i = 0; i < 100000; i++) {
+            model.intValue = i;
+            (void)model.intValue;
+        }
+    }];
 }
 
 #pragma mark - 边界情况测试
@@ -435,11 +451,17 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
         self.kvoNewStringValue = change[NSKeyValueChangeNewKey];
     }
     else if ([keyPath isEqualToString:@"pointValue"]) {
-        // 结构体属性：change 里的 old/new 都是 NSValue，取回 CGPoint 供顺序断言
+        // 结构体属性：change 里的 old/new 都是 NSValue（值为 nil 时是 NSNull），取回 CGPoint 供顺序断言
         CGPoint oldP = CGPointZero;
         CGPoint newP = CGPointZero;
-        [[change objectForKey:NSKeyValueChangeOldKey] getValue:&oldP];
-        [[change objectForKey:NSKeyValueChangeNewKey] getValue:&newP];
+        id oldValue = change[NSKeyValueChangeOldKey];
+        id newValue = change[NSKeyValueChangeNewKey];
+        if ([oldValue isKindOfClass:[NSValue class]]) {
+            [oldValue getValue:&oldP];
+        }
+        if ([newValue isKindOfClass:[NSValue class]]) {
+            [newValue getValue:&newP];
+        }
         self.kvoOldPointValue = oldP;
         self.kvoNewPointValue = newP;
     }
@@ -1133,6 +1155,104 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     
     XCTAssertEqual(model.rectValue.origin.x, -100, @"负值 origin.x 应该正确存储");
     XCTAssertEqual(model.rectValue.origin.y, -200, @"负值 origin.y 应该正确存储");
+}
+
+#pragma mark - 相等性测试（P2：isEqual: / hash）
+
+// 验证同值模型相等：标量/对象/weak/结构体全类型同值 → isEqual YES 且 hash 相同
+- (void)testIsEqualSameValues {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.intValue = 42; b.intValue = 42;
+    a.doubleValue = 3.14; b.doubleValue = 3.14;
+    a.strongString = @"hello"; b.strongString = @"hello";
+    a.pointValue = CGPointMake(1, 2); b.pointValue = CGPointMake(1, 2);
+    NSObject *obj = [[NSObject alloc] init];
+    a.weakObject = obj; b.weakObject = obj;
+    
+    XCTAssertEqualObjects(a, b, @"同值模型应该相等");
+    XCTAssertEqual(a.hash, b.hash, @"同值模型 hash 应该相同");
+}
+
+// 验证任一属性不同 → 不相等（标量/对象/结构体各验证一种）
+- (void)testIsEqualDifferentValues {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.intValue = 42; b.intValue = 43;
+    XCTAssertFalse([a isEqual:b], @"标量不同应该不相等");
+    
+    a.intValue = 42; a.strongString = @"a"; b.strongString = @"b";
+    XCTAssertFalse([a isEqual:b], @"对象不同应该不相等");
+    
+    a.strongString = nil; a.pointValue = CGPointMake(1, 1); b.pointValue = CGPointMake(1, 2);
+    XCTAssertFalse([a isEqual:b], @"结构体不同应该不相等");
+}
+
+// 验证未触碰属性按默认零值参与比较：显式设置 0/nil 与未触碰相等
+- (void)testIsEqualDefaultVsSetZero {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.intValue = 0;          // 显式触碰并设置为 0
+    a.strongString = nil;    // 显式设置为 nil
+    XCTAssertEqualObjects(a, b, @"显式零值与默认值应该相等");
+    XCTAssertEqual(a.hash, b.hash, @"显式零值与默认值的 hash 应该一致");
+}
+
+// 验证不同类（属性集不同）不相等
+- (void)testIsEqualDifferentClass {
+    TestModel *a = [[TestModel alloc] init];
+    ResolveRaceModel *b = [[ResolveRaceModel alloc] init];
+    XCTAssertFalse([a isEqual:b], @"不同类（属性集不同）不应该相等");
+}
+
+// 验证 NSSet 去重：等值模型只保留一个
+- (void)testNSSetDeduplication {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.intValue = 7; b.intValue = 7;
+    a.strongString = @"x"; b.strongString = @"x";
+    
+    NSSet *set = [NSSet setWithObjects:a, b, nil];
+    XCTAssertEqual(set.count, 1, @"等值模型在 NSSet 中应该去重");
+}
+
+// 验证 KVO swizzle 后相等性仍正确
+- (void)testIsEqualAfterKVO {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.intValue = 9; b.intValue = 9;
+    
+    [a addObserver:self forKeyPath:@"intValue" options:NSKeyValueObservingOptionNew context:nil];
+    XCTAssertEqualObjects(a, b, @"KVO swizzle 后相等性应该保持");
+    XCTAssertEqual(a.hash, b.hash, @"KVO swizzle 后 hash 应该一致");
+    [a removeObserver:self forKeyPath:@"intValue"];
+}
+
+// 验证浮点零：-0.0 与 +0.0 isEqual 相等且 hash 一致（与 NSNumber 语义一致）
+- (void)testIsEqualFloatNegativeZero {
+    TestModel *a = [[TestModel alloc] init];
+    TestModel *b = [[TestModel alloc] init];
+    a.doubleValue = 0.0;
+    b.doubleValue = -0.0;
+    XCTAssertEqualObjects(a, b, @"-0.0 与 +0.0 应该相等");
+    XCTAssertEqual(a.hash, b.hash, @"-0.0 与 +0.0 的 hash 应该一致");
+}
+
+// 验证协议注入属性的相等性覆盖：协议属性与类内属性混合，同值相等、协议属性异值不等
+- (void)testIsEqualWithProtocolProperties {
+    ProtocolPropModel *a = [[ProtocolPropModel alloc] init];
+    ProtocolPropModel *b = [[ProtocolPropModel alloc] init];
+    a.protocolInt = 5; b.protocolInt = 5;
+    a.protocolString = @"协议值"; b.protocolString = @"协议值";
+    a.ownInt = 9; b.ownInt = 9;
+    XCTAssertEqualObjects(a, b, @"协议属性同值的模型应该相等");
+    XCTAssertEqual(a.hash, b.hash, @"协议属性同值的模型 hash 应该一致");
+    
+    b.protocolInt = 6;
+    XCTAssertFalse([a isEqual:b], @"协议属性不同应该不相等");
+    a.protocolInt = 5; b.protocolInt = 5;
+    b.protocolString = @"另一个值";
+    XCTAssertFalse([a isEqual:b], @"协议字符串属性不同应该不相等");
 }
 
 @end

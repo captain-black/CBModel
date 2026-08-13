@@ -70,3 +70,11 @@
 @dynamic strF;
 
 @end
+
+@implementation ProtocolPropModel
+
+@dynamic protocolInt;
+@dynamic protocolString;
+@dynamic ownInt;
+
+@end

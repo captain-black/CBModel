@@ -84,24 +84,38 @@
 #pragma mark - 类级缓存竞态测试模型（P0-2.3）
 
 /// 仅供 testClassLevelCacheConcurrentResolve 使用：保证本类的 selector
-/// 首次解析（resolveInstanceMethod:）恰好发生在并发阶段，从而并发写类级缓存
+/// 首次解析（resolveInstanceMethod:）恰好发生在并发阶段，从而并发写类级缓存。
+/// 属性用 atomic：并发写入有槽锁保护（去锁重构后 non-atomic 无锁，并发写属误用），
+/// 本测试只关心"并发首次解析"的类级缓存竞态，不涉及 non-atomic 值语义。
 @interface ResolveRaceModel : CBModel
-@property (nonatomic) NSInteger propA;
-@property (nonatomic) NSInteger propB;
-@property (nonatomic) NSInteger propC;
-@property (nonatomic) NSInteger propD;
-@property (nonatomic) NSInteger propE;
-@property (nonatomic, strong) NSString *strF;
-@property (nonatomic, strong) NSString *strG;
-@property (nonatomic, strong) NSString *strH;
+@property (atomic) NSInteger propA;
+@property (atomic) NSInteger propB;
+@property (atomic) NSInteger propC;
+@property (atomic) NSInteger propD;
+@property (atomic) NSInteger propE;
+@property (atomic, strong) NSString *strF;
+@property (atomic, strong) NSString *strG;
+@property (atomic, strong) NSString *strH;
 @end
 
 /// 第二组全新类：跨类并发首次解析，规避 runtime 对同一类解析的潜在串行化
 @interface ResolveRaceModel2 : CBModel
-@property (nonatomic) NSInteger propA;
-@property (nonatomic) NSInteger propB;
-@property (nonatomic) NSInteger propC;
-@property (nonatomic) NSInteger propD;
-@property (nonatomic, strong) NSString *strE;
-@property (nonatomic, strong) NSString *strF;
+@property (atomic) NSInteger propA;
+@property (atomic) NSInteger propB;
+@property (atomic) NSInteger propC;
+@property (atomic) NSInteger propD;
+@property (atomic, strong) NSString *strE;
+@property (atomic, strong) NSString *strF;
+@end
+
+#pragma mark - 协议属性相等性测试模型（P2）
+
+/// 带协议属性的模型：验证 isEqual/hash 对协议注入属性的覆盖（协议属性 + 类内属性混合）
+@protocol CBProtocolPropTestProtocol <NSObject>
+@property (nonatomic) NSInteger protocolInt;
+@property (nonatomic, strong) NSString *protocolString;
+@end
+
+@interface ProtocolPropModel : CBModel <CBProtocolPropTestProtocol>
+@property (nonatomic) NSInteger ownInt;
 @end
