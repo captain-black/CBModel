@@ -10,6 +10,27 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+/// 自定义结构体（v1.5 测试对照）：无预编译裸字节 IMP，仍走 forwardInvocation 转发路径
+/// （含 padding 空洞——int32+double 对齐为 16B，NSValue 装箱存储，不涉及 memcmp）
+typedef struct {
+    int32_t a;
+    double b;
+} CBTestCustomStruct;
+
+/// 大自定义结构体（256B：32 个 double）：无预编译 IMP，走转发——验证转发对任意大小
+/// 结构体（>16B sret + 引用传参）的正确性
+typedef struct {
+    double d[32];
+} CBTestBigStruct;
+
+/// 联合体（边界锁死用例）：CBModel 对 union 属性不做支持（NSMethodSignature 不支持
+/// union '(' 编码），访问时抛 NSInvalidArgumentException 而非崩溃，测试锁定此边界
+typedef union {
+    int i;
+    double d;
+    char bytes[8];
+} CBTestUnion;
+
 @interface TestModel : CBModel
 
 @property (nonatomic) NSInteger intValue;
@@ -68,11 +89,18 @@
 @property (nonatomic) NSRange rangeValue;
 @property (nonatomic) CGAffineTransform transformValue;
 @property (nonatomic) CATransform3D transform3DValue;
+/// 自定义结构体（v1.5 对照）：无预编译 IMP，仍走 forwardInvocation 转发路径
+@property (nonatomic) CBTestCustomStruct customStructValue;
+/// 大结构体 256B：无预编译 IMP，走转发（任意大小）；联合体：边界锁死（明确抛异常）
+@property (nonatomic) CBTestBigStruct bigStructValue;
+@property (nonatomic) CBTestUnion unionValue;
 
 #pragma mark - Atomic 结构体属性
 
 @property (atomic) CGPoint atomicPointValue;
 @property (atomic) CGRect atomicRectValue;
+/// atomic 大结构体（128B RawBig + 锁内 memcpy，v1.5 盲点加固）
+@property (atomic) CATransform3D atomicTransform3DValue;
 
 #pragma mark - 自定义 getter/setter 名称
 

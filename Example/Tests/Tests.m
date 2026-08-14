@@ -1356,4 +1356,297 @@ static void CBModel_WarmUpAtomicProps(TestModel *model) {
     }
 }
 
+#pragma mark - v1.5：结构体裸字节 IMP（已知结构体脱离 forwardInvocation）
+
+/// 验证核心场景：运行时动态类（服务端驱动模型）添加结构体属性——
+/// T 编码运行时才给定，但类型本身是已知结构体，resolveInstanceMethod 按编码 tag 匹配到
+/// 预编译裸字节 IMP（16B 寄存器返回 / >16B sret 均由编译器 ABI 保证），
+/// 不依赖编译期 @property 声明、不依赖 NSInvocation 转发。
+/// 覆盖注册表全部 7 类型：CGPoint/CGSize/NSRange/CGRect/UIEdgeInsets/CGAffineTransform/CATransform3D
+/// （CATransform3D 128B 用 RawBig 按需分配缓冲，同样脱离转发）。
+- (void)testStructImpRuntimeDynamicClass {
+    Class cls = objc_allocateClassPair(CBModel.class, "CBTestDynStructModel", 0);
+    XCTAssertNotNil(cls, @"动态类创建失败");
+    
+    // 运行时添加结构体属性（T 编码运行时给定，与插件 bundle 一致）
+    objc_property_attribute_t dynAttr = {"D", ""};
+    struct { const char *name; const char *encoding; } props[] = {
+        {"pointValue",      "{CGPoint=dd}"},
+        {"sizeValue",       "{CGSize=dd}"},
+        {"rangeValue",      "{_NSRange=QQ}"},                              // NSRange 的 tag 是 _NSRange
+        {"rectValue",       "{CGRect={CGPoint=dd}{CGSize=dd}}"},
+        {"insetsValue",     "{UIEdgeInsets=dddd}"},
+        {"transformValue",  "{CGAffineTransform=dddddd}"},
+        {"transform3DValue","{CATransform3D=dddddddddddddddd}"},           // 128B：RawBig 按需缓冲
+    };
+    for (int i = 0; i < 7; i++) {
+        objc_property_attribute_t typeAttr = {"T", props[i].encoding};
+        objc_property_attribute_t attrs[] = {typeAttr, dynAttr};
+        XCTAssertTrue(class_addProperty(cls, props[i].name, attrs, 2), @"%s 属性添加失败", props[i].name);
+    }
+    objc_registerClassPair(cls);
+    
+    id model = [[cls alloc] init];
+    
+    // 未写入 → 裸字节槽全零 → 零值（alloc/calloc 清零语义）
+    NSValue *zeroP = [model valueForKey:@"pointValue"];
+    XCTAssertTrue(CGPointEqualToPoint(zeroP.CGPointValue, CGPointZero), @"未写入的 CGPoint 应该是零值");
+    
+    // 逐类型写入 → 读取往返（16B 寄存器返回 / 32B、48B、128B sret 路径全覆盖）
+    CGPoint p = CGPointMake(10.5, -20.25);
+    [model setValue:[NSValue valueWithCGPoint:p] forKey:@"pointValue"];
+    CGPoint gotP = ((NSValue *)[model valueForKey:@"pointValue"]).CGPointValue;
+    XCTAssertEqualWithAccuracy(gotP.x, p.x, 0.001, @"CGPoint x 往返错误");
+    XCTAssertEqualWithAccuracy(gotP.y, p.y, 0.001, @"CGPoint y 往返错误");
+    
+    CGSize sz = CGSizeMake(12.5, 34.5);
+    [model setValue:[NSValue valueWithCGSize:sz] forKey:@"sizeValue"];
+    XCTAssertTrue(CGSizeEqualToSize(((NSValue *)[model valueForKey:@"sizeValue"]).CGSizeValue, sz), @"CGSize 往返错误");
+    
+    NSRange rng = NSMakeRange(123, 456);
+    [model setValue:[NSValue valueWithRange:rng] forKey:@"rangeValue"];
+    XCTAssertTrue(NSEqualRanges(((NSValue *)[model valueForKey:@"rangeValue"]).rangeValue, rng), @"NSRange 往返错误（tag=_NSRange）");
+    
+    CGRect r = CGRectMake(1.5, 2.5, 300.75, 400.25);
+    [model setValue:[NSValue valueWithCGRect:r] forKey:@"rectValue"];
+    XCTAssertTrue(CGRectEqualToRect(((NSValue *)[model valueForKey:@"rectValue"]).CGRectValue, r), @"CGRect 32B sret 往返错误");
+    
+    UIEdgeInsets ins = UIEdgeInsetsMake(1, 2, 3, 4);
+    [model setValue:[NSValue valueWithUIEdgeInsets:ins] forKey:@"insetsValue"];
+    XCTAssertTrue(UIEdgeInsetsEqualToEdgeInsets(((NSValue *)[model valueForKey:@"insetsValue"]).UIEdgeInsetsValue, ins), @"UIEdgeInsets 往返错误");
+    
+    CGAffineTransform tf = CGAffineTransformMake(1, 2, 3, 4, 5, 6);
+    [model setValue:[NSValue valueWithCGAffineTransform:tf] forKey:@"transformValue"];
+    XCTAssertTrue(CGAffineTransformEqualToTransform(((NSValue *)[model valueForKey:@"transformValue"]).CGAffineTransformValue, tf), @"CGAffineTransform 48B sret 往返错误");
+    
+    // CATransform3D 128B（RawBig 按需缓冲 + sret）：同样脱离转发
+    CATransform3D t3d = CATransform3DMakeScale(2, 3, 4);
+    t3d.m41 = 7.5; t3d.m42 = -8.5; t3d.m43 = 9.5;
+    [model setValue:[NSValue valueWithCATransform3D:t3d] forKey:@"transform3DValue"];
+    XCTAssertTrue(CATransform3DEqualToTransform(((NSValue *)[model valueForKey:@"transform3DValue"]).CATransform3DValue, t3d), @"CATransform3D 128B sret 往返错误");
+    
+    // IMP 命中断言：respondsToSelector YES 证明走预编译 IMP 而非转发兜底——
+    // 若某类型的编码 tag 匹配失败（如 NSRange 的 _NSRange 假设不成立），
+    // 会静默降级走转发且往返断言仍绿（转发也正确），此断言堵住该验证盲点
+    for (int i = 0; i < 7; i++) {
+        SEL getter = NSSelectorFromString([NSString stringWithUTF8String:props[i].name]);
+        XCTAssertTrue([model respondsToSelector:getter],
+                      @"%s getter 应命中预编译 IMP（respondsToSelector YES）而非转发兜底", props[i].name);
+    }
+    
+    // KVO 兼容性由现有 testKVONotification*（pointValue/atomicPointValue 观察顺序）自动覆盖——
+    // 新 IMP 的 willChange/didChange 顺序与标量一致，KVO 框架经 getter 自动装箱 old/new
+}
+
+/// 验证自定义结构体（无预编译 IMP）仍走 forwardInvocation 转发路径：
+/// 首次转发扫描注册（签名缓存写入表项），后续转发快查表命中免扫描，
+/// methodSignatureForSelector: 同样免扫描直接返回缓存签名（v1.5 签名缓存）。
+- (void)testCustomStructForwarding {
+    TestModel *model = [[TestModel alloc] init];
+    CBTestCustomStruct cs = {42, 3.14};
+    model.customStructValue = cs;    // 首次：扫描属性列表 → 锁内注册表项（含签名缓存）
+    CBTestCustomStruct got = model.customStructValue;   // 二次：快查表命中，免扫描
+    XCTAssertEqual(got.a, 42, @"自定义结构体 a 字段往返错误");
+    XCTAssertEqualWithAccuracy(got.b, 3.14, 0.001, @"自定义结构体 b 字段往返错误");
+    
+    // 签名缓存：methodSignatureForSelector: 命中表项直接返回（不再扫描属性列表）
+    NSMethodSignature *sig = [model methodSignatureForSelector:@selector(customStructValue)];
+    XCTAssertNotNil(sig, @"自定义结构体 getter 应有方法签名");
+    XCTAssertEqual(sig.methodReturnLength, sizeof(CBTestCustomStruct), @"签名返回长度应为结构体大小");
+    
+    // KVC 读取（valueForUndefinedKey 返回装箱 NSValue）
+    NSValue *boxed = [model valueForKey:@"customStructValue"];
+    XCTAssertNotNil(boxed, @"KVC 读取自定义结构体应返回 NSValue");
+    CBTestCustomStruct fromKVC;
+    [boxed getValue:&fromKVC size:sizeof(CBTestCustomStruct)];
+    XCTAssertEqual(fromKVC.a, 42, @"KVC 读取后 a 字段错误");
+    XCTAssertEqualWithAccuracy(fromKVC.b, 3.14, 0.001, @"KVC 读取后 b 字段错误");
+    // 注：KVC 写入（setValue:forKey:）对转发属性无 setter IMP（respondsToSelector: NO），
+    // 抛 NSUndefinedKeyException 属既有行为（已知结构体因有预编译 IMP 而支持）
+}
+
+/// 验证转发路径对任意大小结构体的正确性（v1.5 边界）：256B 大结构体（>16B sret +
+/// 引用传参）——无预编译 IMP，走 forwardInvocation，NSInvocation/NSValue 按签名处理
+/// 任意大小。编译期直接赋值 + KVC 读回逐字段验证。
+- (void)testBigStructForwarding {
+    TestModel *model = [[TestModel alloc] init];
+    
+    // 大结构体 256B：直接赋值（编译期按 256B 引用传参）→ 转发装箱 → 读回逐字段验证
+    CBTestBigStruct big; memset(&big, 0, sizeof(big));
+    for (int i = 0; i < 32; i++) {
+        big.d[i] = i * 1.5;
+    }
+    model.bigStructValue = big;
+    CBTestBigStruct gotBig = model.bigStructValue;
+    for (int i = 0; i < 32; i++) {
+        XCTAssertEqualWithAccuracy(gotBig.d[i], i * 1.5, 0.001, @"大结构体字段 %d 往返错误", i);
+    }
+    
+    // KVC 读取：统一装箱为 NSValue（valueForUndefinedKey 路径）
+    NSValue *boxedBig = [model valueForKey:@"bigStructValue"];
+    XCTAssertNotNil(boxedBig, @"KVC 读大结构体应返回 NSValue");
+    CBTestBigStruct outBig; memset(&outBig, 0, sizeof(outBig));
+    [boxedBig getValue:&outBig size:sizeof(CBTestBigStruct)];
+    XCTAssertEqualWithAccuracy(outBig.d[31], 31 * 1.5, 0.001, @"KVC 读大结构体末字段错误");
+    
+    // 转发属性的 KVC 写入：无 setter IMP，抛 NSUndefinedKeyException（既有行为，文档化锁死）
+    XCTAssertThrowsSpecificNamed(
+        [model setValue:[NSValue valueWithBytes:&big objCType:@encode(CBTestBigStruct)] forKey:@"bigStructValue"],
+        NSException, NSUndefinedKeyException,
+        @"转发属性（无预编译 IMP）的 KVC 写入应抛 NSUndefinedKeyException");
+}
+
+/// union 属性边界锁死（v1.5 决策：不做 union 支持）：
+/// NSMethodSignature 不支持 union '(' 编码，methodSignatureForSelector: 构造签名时抛
+/// NSInvalidArgumentException——"明确报错而非崩溃"。JSON/服务端驱动场景无 union 类型，
+/// ObjC 生态（KVO/KVC/NSInvocation）对 union 属性也全线不支持，投入产出比为负。
+- (void)testUnionPropertyUnsupported {
+    TestModel *model = [[TestModel alloc] init];
+    
+    // getter：消息发送 → 转发签名构造 → NSMethodSignature 抛异常（而非崩溃）
+    XCTAssertThrowsSpecificNamed(
+        ^{ CBTestUnion g = model.unionValue; (void)g; }(),
+        NSException, NSInvalidArgumentException,
+        @"union getter 应抛 NSInvalidArgumentException（明确报错，非崩溃）");
+    
+    // setter：同样边界
+    CBTestUnion u;
+    u.d = 3.25;
+    XCTAssertThrowsSpecificNamed(
+        ^{ model.unionValue = u; }(),
+        NSException, NSInvalidArgumentException,
+        @"union setter 应抛 NSInvalidArgumentException（明确报错，非崩溃）");
+}
+
+/// 验证运行时动态类（服务端驱动场景）添加大结构体属性：
+/// T 编码用 @encode 运行时生成，resolveInstanceMethod 未命中已知类型 → 走转发，
+/// objc_msgSend 直调 setter（插件真实场景）→ KVC 读回验证。
+- (void)testRuntimeDynamicBigStruct {
+    Class cls = objc_allocateClassPair(CBModel.class, "CBTestDynBigModel", 0);
+    XCTAssertNotNil(cls, @"动态类创建失败");
+    
+    objc_property_attribute_t typeAttr = {"T", @encode(CBTestBigStruct)};
+    objc_property_attribute_t dynAttr = {"D", ""};
+    objc_property_attribute_t attrs[] = {typeAttr, dynAttr};
+    XCTAssertTrue(class_addProperty(cls, "bigStructValue", attrs, 2), @"大结构体属性添加失败");
+    objc_registerClassPair(cls);
+    
+    id model = [[cls alloc] init];
+    
+    // 未写入：Boxed 槽无值 → KVC 读 nil
+    XCTAssertNil([model valueForKey:@"bigStructValue"], @"未写入的大结构体 KVC 读应为 nil");
+    
+    // 大结构体：objc_msgSend 直调 setter（插件真实场景——插件 bundle 内有编译期声明，
+    // 运行时注册类后按编译期 ABI 直调；走转发装箱）→ KVC 读回验证。
+    // 注：此处不能用 NSInvocation 调 setter——实测 NSInvocation setArgument 对
+    // struct 内嵌数组编码（{CBTestBigStruct=[32d]}）崩溃（NSInvocation 的另一处坑，
+    // 与 setValue:forUndefinedKey: 弃用它的原因同源）。
+    CBTestBigStruct big; memset(&big, 0, sizeof(big));
+    for (int i = 0; i < 32; i++) {
+        big.d[i] = i * 0.5;
+    }
+    SEL setter = NSSelectorFromString(@"setBigStructValue:");
+    NSMethodSignature *sig = [model methodSignatureForSelector:setter];
+    XCTAssertNotNil(sig, @"动态类大结构体 setter 应有签名");
+    XCTAssertEqual(sig.methodReturnLength, 0UL, @"setter 返回 void");
+    ((void (*)(id, SEL, CBTestBigStruct))objc_msgSend)(model, setter, big);
+    
+    NSValue *boxed = [model valueForKey:@"bigStructValue"];
+    XCTAssertNotNil(boxed, @"KVC 读大结构体应返回 NSValue");
+    CBTestBigStruct outBig; memset(&outBig, 0, sizeof(outBig));
+    [boxed getValue:&outBig size:sizeof(CBTestBigStruct)];
+    for (int i = 0; i < 32; i++) {
+        XCTAssertEqualWithAccuracy(outBig.d[i], i * 0.5, 0.001, @"动态类大结构体字段 %d 往返错误", i);
+    }
+}
+
+/// atomic 大结构体实测（v1.5 盲点加固）：CATransform3D 128B 的 atomic 槽
+/// （RawBig 按需缓冲 + os_unfair_lock 锁内 128B memcpy），并发写入后值完整性。
+- (void)testAtomicTransform3DProperty {
+    TestModel *model = [[TestModel alloc] init];
+    CATransform3D t = CATransform3DMakeRotation(M_PI / 4, 1, 0, 0);
+    t.m41 = 11.5; t.m42 = -22.5; t.m43 = 33.5;
+    model.atomicTransform3DValue = t;
+    XCTAssertTrue(CATransform3DEqualToTransform(model.atomicTransform3DValue, t),
+                  @"atomic CATransform3D 128B 往返错误");
+    
+    // 并发写入压力：值完整性。atomic 语义 = 读到的值必是"某个线程完整写入的值"，
+    // 不保证是"自己刚写的"（其他线程可能已覆盖）——无撕裂判据：m41/m42/m43
+    // 三元组必须匹配某一候选 i（三个字段来自同一次写入），而非跨写入的混合值
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0);
+    dispatch_group_t group = dispatch_group_create();
+    __block BOOL valid = YES;
+    for (int i = 0; i < 8; i++) {
+        dispatch_group_async(group, q, ^{
+            CATransform3D local = CATransform3DMakeTranslation(100 + i, i, -i);
+            for (int k = 0; k < 200; k++) {
+                model.atomicTransform3DValue = local;
+                CATransform3D back = model.atomicTransform3DValue;
+                int idx = (int)(back.m41 - 100);
+                if (idx < 0 || idx > 7 || back.m42 != idx || back.m43 != -idx) {
+                    valid = NO;
+                }
+            }
+        });
+    }
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    XCTAssertTrue(valid, @"atomic CATransform3D 并发写入后值应完整（无撕裂）");
+}
+
+/// 性能基准：裸字节 IMP 路径（CGPoint / CGAffineTransform）vs 转发路径（自定义结构体）。
+/// 验证"已知结构体脱离 NSInvocation 转发"与"签名缓存 + 免扫描转发"的收益量级
+/// （日志输出，不做阈值断言——机器差异大，基准数字仅参考）。
+- (void)testStructImpPerformance {
+    TestModel *model = [[TestModel alloc] init];
+    model.pointValue = CGPointMake(1, 2);                            // 预热：CGPoint 裸字节 IMP
+    model.transformValue = CGAffineTransformIdentity;                // 预热：48B sret 裸字节 IMP
+    model.customStructValue = (CBTestCustomStruct){1, 2};            // 预热：自定义结构体转发注册
+    
+    NSUInteger iterations = 200000;
+    CFTimeInterval start;
+    
+    // 新路径：裸字节 IMP（快查表 + memcpy，无 NSInvocation）
+    start = CACurrentMediaTime();
+    for (NSUInteger i = 0; i < iterations; i++) {
+        model.pointValue = CGPointMake(i, i);
+        CGPoint p = model.pointValue;
+        if (p.x != i) break;   // 防优化
+    }
+    CFTimeInterval impTime = CACurrentMediaTime() - start;
+    
+    // 新路径最大已知结构体：CGAffineTransform 48B（sret + 48B memcpy）
+    start = CACurrentMediaTime();
+    for (NSUInteger i = 0; i < iterations; i++) {
+        CGAffineTransform t = CGAffineTransformMakeTranslation(i, i);
+        model.transformValue = t;
+        CGAffineTransform back = model.transformValue;
+        if (back.tx != i) break;
+    }
+    CFTimeInterval imp3DTime = CACurrentMediaTime() - start;
+    
+    // 新路径超大结构体：CATransform3D 128B（RawBig 按需缓冲 + sret + 128B memcpy）
+    start = CACurrentMediaTime();
+    for (NSUInteger i = 0; i < iterations; i++) {
+        CATransform3D t = CATransform3DMakeTranslation(i, i, i);
+        model.transform3DValue = t;
+        CATransform3D back = model.transform3DValue;
+        if (back.m41 != i) break;
+    }
+    CFTimeInterval impBigTime = CACurrentMediaTime() - start;
+    
+    // 转发路径：自定义结构体（签名缓存 + 快查表命中免扫描，剩余 NSInvocation 链成本）
+    start = CACurrentMediaTime();
+    for (NSUInteger i = 0; i < iterations; i++) {
+        model.customStructValue = (CBTestCustomStruct){(int32_t)i, i * 2.0};
+        CBTestCustomStruct s = model.customStructValue;
+        if (s.a != (int32_t)i) break;
+    }
+    CFTimeInterval fwdTime = CACurrentMediaTime() - start;
+    
+    NSLog(@"[struct-imp] CGPoint=%.1f ns/op, CGAffineTransform=%.1f ns/op, CATransform3D=%.1f ns/op, custom-forward=%.1f ns/op, CGPoint speedup=%.1fx",
+          impTime / iterations * 1e9, imp3DTime / iterations * 1e9, impBigTime / iterations * 1e9,
+          fwdTime / iterations * 1e9, fwdTime / impTime);
+    XCTAssertGreaterThan(fwdTime, impTime, @"裸字节 IMP 应快于转发路径");
+}
+
 @end

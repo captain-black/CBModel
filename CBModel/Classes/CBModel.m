@@ -11,14 +11,17 @@
 #import <objc/message.h>
 #import <os/lock.h>
 #import <stdatomic.h>
+#import <UIKit/UIGeometry.h>  // UIEdgeInsets（CGPoint/CGRect 等经 Foundation 间接引入）
 
 #pragma mark - 属性槽（每实例每属性一个，替代共享容器）
 /// 槽的存储语义（ensureSlotArray 时按属性编码解析确定）
 typedef NS_ENUM(uint8_t, CBMPropStorage) {
     CBMPropStorageStrong = 0,   // strong/copy 对象 → _strongValue
     CBMPropStorageWeak,         // weak 对象 → _weakValue（ARC 自动置零）
-    CBMPropStorageRaw,          // 标量/指针/SEL → _raw.bytes（裸字节，v1.4 2.5）
-    CBMPropStorageBoxed,        // 结构体/联合体/C 数组 → _boxedValue（NSValue 装箱，大小不定）
+    CBMPropStorageRaw,          // 标量/指针/SEL + 已知结构体（≤64B）→ _raw.bytes（裸字节）
+    CBMPropStorageRawBig,       // 已知大结构体（>64B，如 CATransform3D 128B）→ _bigBytes
+                                // （ensureSlotArray 时按类型大小 calloc 一次，不膨胀标量槽）
+    CBMPropStorageBoxed,        // 结构体/联合体/C 数组（无预编译 IMP）→ _boxedValue（NSValue 装箱）
 };
 
 /// 槽对象：迷你 ivar 容器。不同属性的槽互不共享任何结构 → 并发访问天然隔离，
@@ -31,20 +34,30 @@ typedef NS_ENUM(uint8_t, CBMPropStorage) {
     id __weak _weakValue;       // weak 对象值（ARC 自动置零）
     NSValue *_boxedValue;       // 结构体/联合体/C 数组装箱值（ARC 自动管理）
     os_unfair_lock _lock;       // atomic 属性专用（per-instance，alloc 清零即有效）
-    /// 裸字节存储：标量/指针/SEL（long double 最大 16 字节）。
+    /// RawBig 槽的专用缓冲：ensureSlotArray 时按类型大小 calloc（清零 → 未写入 = 零值），
+    /// 生命周期与槽一致（dealloc free）。仅已知大结构体（>64B）使用，
+    /// 标量/对象槽零膨胀（v1.5）。
+    unsigned char *_bigBytes;
+    /// 裸字节存储：标量/指针/SEL（long double 最大 16 字节）+ 已知结构体
+    /// （v1.5：CGPoint/CGSize/NSRange 16B、CGRect/UIEdgeInsets 32B、CGAffineTransform 48B）。
+    /// >64B 的已知结构体（CATransform3D 128B）走 _bigBytes。
     /// 统一用 memcpy 读写（无对齐要求、无严格别名问题），
     /// 仅 long long 成员用于把 union 对齐提到 8 字节（long double 需要）。
     union {
-        unsigned char bytes[16];
+        unsigned char bytes[64];
         long long align;
     } _raw;
 }
+- (void)dealloc;
 @end
 
-/// 热路径查询结果：一次查表同时拿属性名（KVO key）与槽下标
+/// 热路径查询结果：一次查表同时拿属性名（KVO key）、槽下标与转发签名缓存
 typedef struct {
     __unsafe_unretained NSString *propName;  // 未命中 = nil
-    NSInteger index;                         // 未命中 = -1
+    NSInteger index;                         // 未命中 = -1（槽数组下标）
+    /// 转发属性（结构体等）的方法签名缓存：表项由转发注册时写入，methodSignatureForSelector:
+    /// 免扫描直接返回。标量/已注入 IMP 的属性为 nil（热路径忽略此字段）。
+    __unsafe_unretained NSMethodSignature *signature;
 } CBMPropInfo;
 
 // 前置声明：快查表查询函数与表类型（宏在文件前部展开，需在宏之前可见；
@@ -66,7 +79,8 @@ static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel);
 - (NSInteger)ensureForwardedPropIndex:(Class)declaringClass
                                   sel:(SEL)sel
                              propName:(NSString *)propName
-                            propIndex:(NSInteger)propIndex;
+                            propIndex:(NSInteger)propIndex
+                            signature:(NSMethodSignature *)signature;
 @end
 
 #pragma mark - nonatomic 非原子性的IMP实现
@@ -179,6 +193,61 @@ IMP_FOR_TYPE(double, double);
 IMP_FOR_TYPE(longDouble, long double);
 IMP_FOR_TYPE(bool, bool);
 
+#pragma mark - 结构体IMP（v1.5：已知结构体裸字节直通，脱离 forwardInvocation）
+/// 已知结构体注册表：M(C 类型名, 类型编码 tag 名)。一个条目驱动以下全部生成：
+/// ① 4 个 IMP（non-atomic/atomic × getter/setter）
+/// ② T 编码匹配（imp_for_property / CBMKnownStructEncoding / KVC 类型化直调）
+/// ③ 容量编译期断言（_Static_assert）
+/// 注意 tag 名是编码里的结构体 tag：NSRange 定义 tag 为 _NSRange（编码 {_NSRange=QQ}）。
+/// 容量无硬上限：≤64B 内嵌 _raw.bytes，>64B（CATransform3D 128B）由 ensureSlotArray
+/// 按类型大小 calloc 专用缓冲（RawBig）——标量/对象槽零膨胀。
+/// 新增结构体类型只需在此追加一行——IMP 返回/参数 ABI 由编译器按各类型签名生成
+/// （arm64：≤16B 寄存器返回，>16B sret x8 隐藏指针；参数同理）。
+#define CB_KNOWN_STRUCT_TYPES(M) \
+    M(CGPoint, CGPoint) \
+    M(CGSize, CGSize) \
+    M(CGRect, CGRect) \
+    M(NSRange, _NSRange) \
+    M(UIEdgeInsets, UIEdgeInsets) \
+    M(CGAffineTransform, CGAffineTransform) \
+    M(CATransform3D, CATransform3D)
+
+/// 裸字节缓冲选择：≤64B 用内嵌 _raw.bytes，>64B（RawBig，如 CATransform3D）用按需分配
+/// 的 _bigBytes。size 是 sizeof(类型) 编译期常量 → 内联后分支被折叠，热路径零开销。
+static inline void *CBMSlotRawBytes(CBMPropertySlot *slot, size_t size) {
+    if (size > 64) {
+        return slot->_bigBytes;
+    }
+    return slot->_raw.bytes;
+}
+
+/// 每个已知结构体类型一个 C 函数 IMP：属性上下文仍由 _cmd 查快查表（与标量 IMP 相同）——
+/// 编译期 @property 与运行时 class_addProperty 属性共用同一 IMP，无需每属性独立注入。
+#define IMP_FOR_STRUCT(typeName, _TYPE_)                                                \
+static _TYPE_ _getter_for_struct_##typeName##_(CBModel* self, SEL _cmd) {               \
+    CB_GETTER_PREAMBLE(self, _cmd, info, slot, (_TYPE_){0})                             \
+    _TYPE_ value;                                                                       \
+    memcpy(&value, CBMSlotRawBytes(slot, sizeof(_TYPE_)), sizeof(_TYPE_));              \
+    return value;                                                                       \
+}                                                                                       \
+\
+static void _setter_for_struct_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) {   \
+    CB_SETTER_PREAMBLE(self, _cmd, info, slot)                                          \
+    [self willChangeValueForKey:info.propName];                                         \
+    memcpy(CBMSlotRawBytes(slot, sizeof(_TYPE_)), &value, sizeof(_TYPE_));              \
+    [self didChangeValueForKey:info.propName];                                          \
+}
+
+#define CB_STRUCT_IMP_DEFINE(typeName, tagName) IMP_FOR_STRUCT(typeName, typeName)
+CB_KNOWN_STRUCT_TYPES(CB_STRUCT_IMP_DEFINE)
+#undef CB_STRUCT_IMP_DEFINE
+
+/// 编译期防御断言：注册类型不得超出 256B（超过说明类型异常；大结构体按需分配无硬容量限制）
+#define CB_STRUCT_SIZE_CHECK(typeName, tagName) \
+    _Static_assert(sizeof(typeName) <= 256, "CBModel: 注册结构体大小异常（>256B）");
+CB_KNOWN_STRUCT_TYPES(CB_STRUCT_SIZE_CHECK)
+#undef CB_STRUCT_SIZE_CHECK
+
 #pragma mark - Atomic 原子性的IMP实现
 #define IMP_FOR_TYPE_ATOMIC(typeName, _TYPE_)                                           \
 static _TYPE_ _getter_for_atomic_##typeName##_(CBModel* self, SEL _cmd) {               \
@@ -198,6 +267,30 @@ static void _setter_for_atomic_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ val
     os_unfair_lock_unlock(&slot->_lock);                                                \
     [self didChangeValueForKey:info.propName];                                          \
 }
+
+/// 已知结构体的 atomic 版：锁内 memcpy，KVO 顺序与标量 atomic 一致
+#define IMP_FOR_STRUCT_ATOMIC(typeName, _TYPE_)                                          \
+static _TYPE_ _getter_for_atomic_struct_##typeName##_(CBModel* self, SEL _cmd) {         \
+    CB_GETTER_PREAMBLE(self, _cmd, info, slot, (_TYPE_){0})                              \
+    os_unfair_lock_lock(&slot->_lock);                                                  \
+    _TYPE_ value;                                                                       \
+    memcpy(&value, CBMSlotRawBytes(slot, sizeof(_TYPE_)), sizeof(_TYPE_));              \
+    os_unfair_lock_unlock(&slot->_lock);                                                \
+    return value;                                                                       \
+}                                                                                       \
+\
+static void _setter_for_atomic_struct_##typeName##_(CBModel* self, SEL _cmd, _TYPE_ value) { \
+    CB_SETTER_PREAMBLE(self, _cmd, info, slot)                                          \
+    [self willChangeValueForKey:info.propName];                                         \
+    os_unfair_lock_lock(&slot->_lock);                                                  \
+    memcpy(CBMSlotRawBytes(slot, sizeof(_TYPE_)), &value, sizeof(_TYPE_));              \
+    os_unfair_lock_unlock(&slot->_lock);                                                \
+    [self didChangeValueForKey:info.propName];                                          \
+}
+
+#define CB_STRUCT_IMP_DEFINE_ATOMIC(typeName, tagName) IMP_FOR_STRUCT_ATOMIC(typeName, typeName)
+CB_KNOWN_STRUCT_TYPES(CB_STRUCT_IMP_DEFINE_ATOMIC)
+#undef CB_STRUCT_IMP_DEFINE_ATOMIC
 
 static id _getter_for_atomic_obj_strong_(CBModel* self, SEL _cmd) {
     CB_GETTER_PREAMBLE(self, _cmd, info, slot, nil)
@@ -325,6 +418,23 @@ IMP_FOR_TYPE_ATOMIC(bool, bool);
  
  请注意，上述列表仅包含了一些常见的编码类型，而实际上还有更多的编码类型可以用于描述不同的数据类型。如果你需要详细的编码类型列表及其说明，可以参考苹果官方文档中关于Objective-C运行时机制的部分，其中有完整的编码类型规范和说明。
  //*/
+/// 判断 T 编码是否为"已知结构体"（有预编译裸字节 IMP，注册表 CB_KNOWN_STRUCT_TYPES）。
+/// 匹配编译期 @property（{CGPoint=dd}）与运行时 class_addProperty（T"..." 带引号）两种编码。
+/// IMP 选择（imp_for_property）与存储语义（CBMSetupSlotSemantics）必须共用此判断保持一致。
+static BOOL CBMKnownStructEncoding(const char *enc) {
+    if (enc == NULL) {
+        return NO;
+    }
+    if (enc[0] == '"') {   // 运行时动态属性编码带引号（T"{CGPoint=dd}"）
+        enc++;
+    }
+#define CB_STRUCT_ENCODING_MATCH(typeName, tagName)                                     \
+    if (strncmp(enc, "{" #tagName "=", sizeof(#tagName) + 1) == 0) { return YES; }
+    CB_KNOWN_STRUCT_TYPES(CB_STRUCT_ENCODING_MATCH)
+#undef CB_STRUCT_ENCODING_MATCH
+    return NO;
+}
+
 static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttributes) {
     char *typeEncoding = strchr(propAttributes, 'T');
     // 编译器属性的 T 编码无引号（Ti,D）；运行时动态属性（class_addProperty）带引号（T"i",D）——统一跳过引号
@@ -425,6 +535,21 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
          */
         case '{': // struct 结构体类型
         {
+            // v1.5：已知结构体（注册表 CB_KNOWN_STRUCT_TYPES）有预编译裸字节 IMP——
+            // 返回/参数 ABI 由各 C 函数签名决定，编译期 @property 与运行时 class_addProperty
+            // 共用（按 T 编码 tag 匹配）。未知结构体仍返回 nil 走 forwardInvocation
+            // （NSInvocation 按运行时签名工作，任意大小/自定义类型均正确）。
+            const char *structEnc = typeEncoding + 1;
+            if (*structEnc == '"') {
+                structEnc++;   // 运行时动态属性编码带引号
+            }
+#define CB_STRUCT_IMP_MATCH(typeName, tagName)                                          \
+    if (strncmp(structEnc, "{" #tagName "=", sizeof(#tagName) + 1) == 0) {              \
+        return isSetter? (isAtomic? (IMP)_setter_for_atomic_struct_##typeName##_ : (IMP)_setter_for_struct_##typeName##_) \
+                       : (isAtomic? (IMP)_getter_for_atomic_struct_##typeName##_ : (IMP)_getter_for_struct_##typeName##_); \
+    }
+            CB_KNOWN_STRUCT_TYPES(CB_STRUCT_IMP_MATCH)
+#undef CB_STRUCT_IMP_MATCH
             return nil;
         } break;
         case '[': // array 数组
@@ -446,7 +571,7 @@ static IMP imp_for_property(BOOL isSetter, BOOL isAtomic, const char* propAttrib
 // 前置声明（定义在文件后部：selector 映射区 / 属性存储区，宏在文件前部展开需要）
 static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel);
 static inline NSString *CBMClassPropNameForSel(Class cls, SEL sel);
-static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop);
+static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop, BOOL rawBytesAllowed);
 static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName);
 
 /// 类属性 getter/setter：self 是类对象（Class），值存储 per-class（静态字典 + 锁，低频路径）。
@@ -601,10 +726,11 @@ static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
     CBMPropertySlot *slot = s_slots[key];
     if (slot == nil) {
         slot = [[CBMPropertySlot alloc] init];
-        // 语义解析：类属性声明在 metaclass 的属性列表里
+        // 语义解析：类属性声明在 metaclass 的属性列表里。
+        // rawBytesAllowed=NO：类属性 IMP 统一读写 _boxedValue（NSValue 装箱），槽语义强制一致
         objc_property_t prop = class_getProperty(object_getClass(cls), propName.UTF8String);
         if (prop != NULL) {
-            CBMSetupSlotSemantics(slot, prop);
+            CBMSetupSlotSemantics(slot, prop, NO);
         }
         s_slots[key] = slot;
     }
@@ -613,6 +739,12 @@ static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
 }
 
 @implementation CBMPropertySlot
+
+/// RawBig 槽的专用缓冲释放（与槽同生命周期；ARC 下 free 手动内存）
+- (void)dealloc {
+    free(_bigBytes);
+    _bigBytes = NULL;
+}
 @end
 
 @implementation CBModel
@@ -716,9 +848,26 @@ static CBMPropertySlot *CBMClassPropSlot(Class cls, NSString *propName) {
                     }
                     case 'B': ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setterSel, (BOOL)[value boolValue]); break;
                     default: {
-                        /* 对于指针、数组、结构体、联合体等复杂类型，无法直接用 NSNumber 装箱，
-                         * 这里直接把入参 id 值当对象指针传进去，由调用端保证类型匹配。
-                         * 若实际类型不符，运行期会崩溃，属于调用者责任。 */
+                        /* 结构体等复杂类型：已知结构体（有预编译 IMP，注册表 CB_KNOWN_STRUCT_TYPES）
+                         * 按类型化 objc_msgSend 传参——编译器生成正确参数 ABI（16B 寄存器对 /
+                         * >16B 引用传参的平台差异），不能按 id 指针传。
+                         * 其余复杂类型维持原语义：直接把入参 id 值当对象指针传进去，
+                         * 由调用端保证类型匹配，类型不符运行期崩溃属调用者责任。 */
+                        if (typeAttr[0] == '{' && [value isKindOfClass:NSValue.class]) {
+#define CB_STRUCT_KVC_SEND(typeName, tagName)                                           \
+                            if (strncmp(typeAttr, "{" #tagName "=", sizeof(#tagName) + 1) == 0) { \
+                                typeName v;                                             \
+                                if (@available(iOS 11.0, *)) {                          \
+                                    [value getValue:&v size:sizeof(typeName)];          \
+                                } else {                                                \
+                                    [value getValue:&v];                                \
+                                }                                                       \
+                                ((void (*)(id, SEL, typeName))objc_msgSend)(self, setterSel, v); \
+                                break;                                                  \
+                            }
+                            CB_KNOWN_STRUCT_TYPES(CB_STRUCT_KVC_SEND)
+#undef CB_STRUCT_KVC_SEND
+                        }
                         ((void (*)(id, SEL, id))objc_msgSend)(self, setterSel, value);
                         break;
                     }
@@ -822,6 +971,10 @@ typedef struct {
     _Atomic(SEL) sel;                    // 空槽 = NULL；解析后 = 该 selector（原子发布/读取）
     __unsafe_unretained NSString *propName;  // 由表 CFRetain 永久持有（一次解析终生有效）
     NSInteger index;                     // 槽数组下标（Phase 2：类链前缀偏移 + 类内序号）
+    __unsafe_unretained NSMethodSignature *signature;  // 转发属性（结构体等）的方法签名缓存：
+                                        // 注册时由表 CFRetain 永久持有，先于 sel release 发布
+                                        // （acquire 命中即见完整签名，methodSignatureForSelector: 免扫描）。
+                                        // 标量/已注入 IMP 的属性恒为 nil。
 } CBMSelMapEntry;
 
 typedef struct CBMSelMap {
@@ -921,6 +1074,17 @@ static NSUInteger CBMHashRawBytes(const unsigned char *bytes, char typeCode) {
     return (NSUInteger)(v * 2654435761u);
 }
 
+/// 已知结构体裸字节 hash（FNV-1a，完整大小）：与 isEqual 的完整 memcmp 契约一致
+/// （相等 ⇒ 全字节相同 ⇒ 同 hash），比只取前 8 字节的默认分支区分度更高（v1.5）。
+static NSUInteger CBMHashStructBytes(const unsigned char *bytes, NSUInteger size) {
+    NSUInteger h = 14695981039346656037ULL;   // FNV-1a offset basis（64 位）
+    for (NSUInteger i = 0; i < size; i++) {
+        h ^= bytes[i];
+        h *= 1099511628211ULL;                // FNV-1a prime
+    }
+    return h;
+}
+
 /// 类链前缀偏移：cls 父链（到 CBModel 止）各声明类 @dynamic 属性数之和，
 /// 与 ensureSlotArray 的实例容量枚举同一逻辑，保证 index < 容量恒成立
 static NSUInteger CBMSelMapBaseIndex(Class cls) {
@@ -933,7 +1097,7 @@ static NSUInteger CBMSelMapBaseIndex(Class cls) {
     return base;
 }
 
-/// 热路径查询：沿类链查快表，一次拿 {propName, index}（无锁原子读）。
+/// 热路径查询：沿类链查快表，一次拿 {propName, index, signature}（无锁原子读）。
 /// 链终止：实例链到 CBModel 止；metaclass 链（类属性查询）到 nil 止——nil 保护防死循环。
 static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel) {
     do {
@@ -946,13 +1110,14 @@ static inline CBMPropInfo CBMPropInfoForSel(Class cls, SEL sel) {
                     break;
                 }
                 if (s == sel) {
-                    return (CBMPropInfo){map->entries[slot].propName, map->entries[slot].index};
+                    return (CBMPropInfo){map->entries[slot].propName, map->entries[slot].index,
+                                         map->entries[slot].signature};
                 }
                 slot = (slot + 1) & map->mask;
             }
         }
     } while (cls != nil && (cls = class_getSuperclass(cls)) != CBModel.class);
-    return (CBMPropInfo){nil, -1};
+    return (CBMPropInfo){nil, -1, nil};
 }
 
 /// 沿类链遍历各表全表扫描（容量小，低频可接受）；子类优先。
@@ -1013,7 +1178,9 @@ static inline CBMSelMap *CBMSelMapForClass(Class cls) {
 /// 上取 2 的幂；分配后容量固定，表项只写不删 → 热路径无锁读安全。
 /// propIndex = 属性在 cls 属性列表中的位置（resolveInstanceMethod/forwardInvocation 扫描时即得），
 /// 槽下标 = baseIndex(类链前缀偏移) + propIndex。
-static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSInteger propIndex) {
+/// signature = 转发属性（结构体等）的方法签名缓存（CFRetain 永久持有）；标量传 NULL。
+static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSInteger propIndex,
+                                    NSMethodSignature *signature) {
     // 确保 cls 的表已注册（锁内；类表数组容量不足时 COW 迁移——热路径无锁读旧数组安全）
     CBMSelMap *map = CBMSelMapForClass(cls);
     if (map == NULL) {
@@ -1047,8 +1214,10 @@ static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSIn
         atomic_store_explicit(&_selMapCount, count + 1, memory_order_release);
     }
     
-    // 探测写入：先写 propName/index（锁内普通写），最后 release 发布 sel → 读者 acquire 命中即见完整表项。
-    // propName 由表 CFRetain 永久持有（永不释放，符合"一次解析终生有效"；C 结构不能持有 strong 对象）
+    // 探测写入：先写 propName/index/signature（锁内普通写），最后 release 发布 sel →
+    // 读者 acquire 命中即见完整表项。
+    // propName/signature 由表 CFRetain 永久持有（永不释放，符合"一次解析终生有效"；
+    // C 结构不能持有 strong 对象）
     NSUInteger slot = CBMSelHash(sel) & map->mask;
     while (atomic_load_explicit(&map->entries[slot].sel, memory_order_relaxed) != NULL) {
         slot = (slot + 1) & map->mask;
@@ -1056,6 +1225,10 @@ static void CBMSelMapEnsureAndWrite(Class cls, SEL sel, NSString *propName, NSIn
     CFRetain((__bridge CFTypeRef)propName);
     map->entries[slot].propName = propName;
     map->entries[slot].index = (NSInteger)map->baseIndex + propIndex;
+    if (signature) {
+        CFRetain((__bridge CFTypeRef)signature);
+        map->entries[slot].signature = signature;
+    }
     atomic_store_explicit(&map->entries[slot].sel, sel, memory_order_release);
 }
 
@@ -1077,7 +1250,7 @@ static BOOL CBMInstallDynamicMethod(Class cls, SEL sel, IMP imp, const char *typ
     os_unfair_lock_lock(&_sel2PropsLock);
     BOOL added = NO;
     if (CBMPropInfoForSel(cls, sel).index < 0) {
-        CBMSelMapEnsureAndWrite(cls, sel, propName, propIndex);   // 快查表（热路径用）
+        CBMSelMapEnsureAndWrite(cls, sel, propName, propIndex, NULL);   // 快查表（热路径用；标量无签名缓存）
         added = class_addMethod(cls, sel, imp, types);
         // 竞争失败（其他线程已添加同名方法）时无需回滚：映射内容一致，重复写入无害
     }
@@ -1095,7 +1268,11 @@ static BOOL CBMInstallDynamicMethod(Class cls, SEL sel, IMP imp, const char *typ
 
 #pragma mark - 属性存储（槽数组，v1.4 Phase 2 组件 B）
 /// 按属性编码设置槽的存储语义与原子性（ensureSlotArray 与类属性槽共用）
-static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
+/// 按属性编码设置槽的存储语义与原子性（ensureSlotArray 与类属性槽共用）。
+/// rawBytesAllowed：实例属性 YES——标量/已知结构体走裸字节（≤64B 内嵌 Raw，>64B 按需分配 RawBig）；
+/// 类属性 NO——全走 NSValue 装箱（类属性不是热路径，且其 IMP 本就读写 _boxedValue，
+/// 强制槽语义与 IMP 存储方式一致）。
+static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop, BOOL rawBytesAllowed) {
     char *typeAttr = property_copyAttributeValue(prop, "T");
     char *nonatomicAttr = property_copyAttributeValue(prop, "N");
     slot->atomic = (nonatomicAttr == NULL);
@@ -1106,11 +1283,18 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
         free(weakAttr);
     } else if (typeAttr != NULL &&
                (typeAttr[0] == '{' || typeAttr[0] == '(' || typeAttr[0] == '[')) {
-        // 结构体/联合体/C 数组：大小不定，保留 NSValue 装箱
-        slot->storage = CBMPropStorageBoxed;
+        // 结构体/联合体/C 数组：已知结构体走裸字节（有预编译 IMP，v1.5，与
+        // imp_for_property 的 '{' 分支同一判断），其余大小不定保留 NSValue 装箱
+        if (rawBytesAllowed && CBMKnownStructEncoding(typeAttr)) {
+            NSUInteger size = 0;
+            NSGetSizeAndAlignment(typeAttr, &size, NULL);
+            slot->storage = size > 64 ? CBMPropStorageRawBig : CBMPropStorageRaw;
+        } else {
+            slot->storage = CBMPropStorageBoxed;
+        }
     } else {
-        // 标量/指针/SEL：裸字节存储（v1.4 2.5，long double 最大 16B 在容量内）
-        slot->storage = CBMPropStorageRaw;
+        // 标量/指针/SEL：实例裸字节存储（long double 最大 16B 在容量内）；类属性装箱
+        slot->storage = rawBytesAllowed ? CBMPropStorageRaw : CBMPropStorageBoxed;
     }
     free(typeAttr);
 }
@@ -1149,7 +1333,18 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                 free(attr);
                 
                 CBMPropertySlot *slot = [[CBMPropertySlot alloc] init];
-                CBMSetupSlotSemantics(slot, list[j]);
+                CBMSetupSlotSemantics(slot, list[j], YES);
+                // RawBig（>64B 已知结构体，如 CATransform3D）：按类型大小 calloc 专用缓冲
+                // （清零 → 未写入 = 零值，与内嵌区语义一致；每实例每属性仅此一次，冷路径）
+                if (slot->storage == CBMPropStorageRawBig) {
+                    char *t = property_copyAttributeValue(list[j], "T");
+                    NSUInteger size = 0;
+                    if (t) {
+                        NSGetSizeAndAlignment(t, &size, NULL);
+                        free(t);
+                    }
+                    slot->_bigBytes = calloc(1, size);
+                }
                 [array addObject:slot];
             }
             free(list);
@@ -1162,16 +1357,22 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
 }
 
 /// 冷路径取"可装箱值"（KVC/description/sDynamicProperties 合成用）：
-/// Raw 槽按属性 T 编码临时装箱（低频路径，装箱开销无所谓）
+/// Raw/RawBig 槽按属性 T 编码临时装箱（低频路径，装箱开销无所谓）
 - (id)slotValue:(CBMPropertySlot *)slot propName:(NSString *)propName {
     switch (slot->storage) {
         case CBMPropStorageStrong: return slot->_strongValue;
         case CBMPropStorageWeak:   return slot->_weakValue;
         case CBMPropStorageBoxed:  return slot->_boxedValue;
-        case CBMPropStorageRaw: {
+        case CBMPropStorageRaw:
+        case CBMPropStorageRawBig: {
             objc_property_t prop = class_getProperty([self class], propName.UTF8String);
             char *typeAttr = prop ? property_copyAttributeValue(prop, "T") : NULL;
-            NSValue *v = typeAttr ? [NSValue valueWithBytes:slot->_raw.bytes objCType:typeAttr] : nil;
+            NSValue *v = nil;
+            if (typeAttr) {
+                NSUInteger size = 0;
+                NSGetSizeAndAlignment(typeAttr, &size, NULL);
+                v = [NSValue valueWithBytes:CBMSlotRawBytes(slot, size) objCType:typeAttr];
+            }
             free(typeAttr);
             return v;
         }
@@ -1248,6 +1449,17 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
         return (v1 == v2) || [v1 isEqual:v2];
     }
     if (typeCode == '{' || typeCode == '(' || typeCode == '[') {
+        // 已知结构体（Raw/RawBig 槽，v1.5）：按完整大小逐字节比较。
+        // 注册表内结构体成员全为基本类型、无 padding 空洞，同值必同位模式，memcmp 安全。
+        // （含 padding 的结构体不能 memcmp——注册新类型时需注意）
+        if (s1 && (s1->storage == CBMPropStorageRaw || s1->storage == CBMPropStorageRawBig)) {
+            objc_property_t sp = class_getProperty(object_getClass(self), propName.UTF8String);
+            char *ta = sp ? property_copyAttributeValue(sp, "T") : NULL;
+            NSUInteger size = 0;
+            if (ta) { NSGetSizeAndAlignment(ta, &size, NULL); free(ta); }
+            return s2 && (s2->storage == CBMPropStorageRaw || s2->storage == CBMPropStorageRawBig) &&
+                   memcmp(CBMSlotRawBytes(s1, size), CBMSlotRawBytes(s2, size), size) == 0;
+        }
         NSValue *v1 = s1 ? s1->_boxedValue : nil;
         NSValue *v2 = s2 ? s2->_boxedValue : nil;
         return (v1 == v2) || [v1 isEqual:v2];
@@ -1274,10 +1486,21 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
         case CBMPropStorageStrong: return [slot->_strongValue hash];   // nil → 0
         case CBMPropStorageWeak:   return [slot->_weakValue hash];
         case CBMPropStorageBoxed:  return [slot->_boxedValue hash];
-        case CBMPropStorageRaw: {
+        case CBMPropStorageRaw:
+        case CBMPropStorageRawBig: {
             objc_property_t prop = class_getProperty(object_getClass(self), propName.UTF8String);
             char *typeAttr = prop ? property_copyAttributeValue(prop, "T") : NULL;
-            NSUInteger h = typeAttr ? CBMHashRawBytes(slot->_raw.bytes, typeAttr[0]) : 0;
+            NSUInteger h = 0;
+            if (typeAttr) {
+                if (typeAttr[0] == '{') {
+                    // 已知结构体：完整字节 hash（v1.5，与 isEqual 的完整 memcmp 契约一致）
+                    NSUInteger size = 0;
+                    NSGetSizeAndAlignment(typeAttr, &size, NULL);
+                    h = CBMHashStructBytes(CBMSlotRawBytes(slot, size), size);
+                } else {
+                    h = CBMHashRawBytes(slot->_raw.bytes, typeAttr[0]);
+                }
+            }
             free(typeAttr);
             return h;
         }
@@ -1287,10 +1510,13 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
 
 /// 结构体/联合体属性无预编译 IMP（imp_for_property 返回 nil），首次走转发时在锁内注册表项。
 /// 注册到属性声明类（与 resolveInstanceMethod 语义一致），查询从实例 isa 链出发（兼容 KVO 子类）。
+/// signature = anInvocation.methodSignature（转发机制构造的正确签名），
+/// 一并缓存进表项供 methodSignatureForSelector: 免扫描直接返回（v1.5 签名缓存）。
 - (NSInteger)ensureForwardedPropIndex:(Class)declaringClass
                                   sel:(SEL)sel
                              propName:(NSString *)propName
-                            propIndex:(NSInteger)propIndex {
+                            propIndex:(NSInteger)propIndex
+                            signature:(NSMethodSignature *)signature {
     Class lookupCls = object_getClass(self);
     CBMPropInfo info = CBMPropInfoForSel(lookupCls, sel);
     if (info.index >= 0) {
@@ -1299,7 +1525,7 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
     os_unfair_lock_lock(&_sel2PropsLock);
     info = CBMPropInfoForSel(lookupCls, sel);   // 锁内双检
     if (info.index < 0) {
-        CBMSelMapEnsureAndWrite(declaringClass, sel, propName, propIndex);
+        CBMSelMapEnsureAndWrite(declaringClass, sel, propName, propIndex, signature);
         info = CBMPropInfoForSel(lookupCls, sel);
     }
     os_unfair_lock_unlock(&_sel2PropsLock);
@@ -1590,6 +1816,13 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
         return signature;
     }
     
+    // v1.5 签名缓存：已注册的转发属性（快查表命中且表项带签名）直接返回，免扫描属性列表。
+    // 签名由首次 forwardInvocation 注册时写入表项（先于 sel release 发布，acquire 命中即见完整签名）。
+    CBMPropInfo info = CBMPropInfoForSel(object_getClass(self), aSelector);
+    if (info.signature) {
+        return info.signature;
+    }
+    
     Class cls = self.class;
     NSString *targetSelName = NSStringFromSelector(aSelector);
     
@@ -1632,6 +1865,10 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                 propSetterName = [NSString stringWithFormat:@"set%c%s:", toupper(propName[0]), propName + 1];
             }
             
+            // 注：union '(' 编码在此由 NSMethodSignature 抛 NSInvalidArgumentException
+            // （"unsupported type encoding spec '('"）——union 属性边界为"明确报错而非崩溃"，
+            // 由测试锁定（CBModel 不做 union 伪装：ABI 与 NSMethodSignature 编码支持边界
+            // 均不支持，见 CBModel交接文档 踩坑记录）
             NSString *typeStr = [NSString stringWithUTF8String:typeAttr];
             
             if ([targetSelName isEqualToString:propGetterName]) {
@@ -1668,9 +1905,66 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
     return nil;
 }
 
-- (void)forwardInvocation:(NSInvocation *)anInvocation {
-    BOOL resolve = NO;
+/// 转发调用共享处理（v1.5）：快查表已注册后的热路径 + 首次扫描注册后共用。
+/// getter/setter 由签名参数个数区分（getter 2 参 / setter 3 参），免每次扫描属性列表。
+/// 槽操作、atomic 锁、KVO 顺序（willChange 先于存储）与重构前完全一致。
+- (void)cbm_handleForwardedInvocation:(NSInvocation *)anInvocation info:(CBMPropInfo)info {
+    if (__builtin_expect(!atomic_load_explicit(&_slotsReady, memory_order_acquire), 0)) {
+        [self ensureSlotArray];
+    }
+    CBMPropertySlot* slot = self->_slotArray[info.index];
     
+    if (anInvocation.methodSignature.numberOfArguments <= 2) {
+        // getter：NSValue 装箱 → 拷贝到返回缓冲
+        NSUInteger retSize = anInvocation.methodSignature.methodReturnLength;
+        NSValue* value = nil;
+        if (slot->atomic) {
+            os_unfair_lock_lock(&slot->_lock);
+        }
+        value = slot->_boxedValue;
+        if (value) {
+            void* buff = alloca(retSize);
+            memset(buff, 0, retSize);
+            [value getValue:buff size:retSize];
+            [anInvocation setReturnValue:buff];
+        }
+        if (slot->atomic) {
+            os_unfair_lock_unlock(&slot->_lock);
+        }
+    } else {
+        // setter：参数拷贝 → NSValue 装箱
+        const char* argTypeCode = [anInvocation.methodSignature getArgumentTypeAtIndex:2];
+        NSUInteger argSize = 0;
+        NSGetSizeAndAlignment(argTypeCode, &argSize, NULL);
+        void* buff = alloca(argSize);
+        [anInvocation getArgument:buff atIndex:2];
+        
+        // KVO 规范要求 willChange 必须先于变更（观测者在 willChange 内取旧值快照），
+        // 与标量/对象 setter 的顺序保持一致
+        [self willChangeValueForKey:info.propName];
+        if (slot->atomic) {
+            os_unfair_lock_lock(&slot->_lock);
+        }
+        slot->_boxedValue = [NSValue value:buff withObjCType:argTypeCode];
+        if (slot->atomic) {
+            os_unfair_lock_unlock(&slot->_lock);
+        }
+        [self didChangeValueForKey:info.propName];
+    }
+}
+
+- (void)forwardInvocation:(NSInvocation *)anInvocation {
+    // 已注册（热路径）：快查表命中 → 免扫描直取槽。
+    // 表项由首次转发注册（getter/setter 各一条），签名缓存一并写入表项
+    // （methodSignatureForSelector: 同样免扫描返回）。
+    CBMPropInfo info = CBMPropInfoForSel(object_getClass(self), anInvocation.selector);
+    if (info.index >= 0) {
+        [self cbm_handleForwardedInvocation:anInvocation info:info];
+        return;
+    }
+    
+    // 首次转发（冷路径，每个 selector 仅一次）：扫描属性列表定位属性 →
+    // 锁内注册表项（幂等，签名缓存一并写入）→ 共享处理
     Class cls = self.class;
     NSString* targetSelName = NSStringFromSelector(anInvocation.selector);
     
@@ -1706,39 +2000,18 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                 }
                 // 目标方法名跟当前属性的getter方法名一致
                 if ([targetSelName isEqualToString:propGetterName]) {
-                    NSUInteger retSize = anInvocation.methodSignature.methodReturnLength;
-                    
-                    // 结构体/联合体属性无预编译 IMP，首次转发时在锁内注册表项（幂等）
+                    // 无预编译 IMP 的转发属性，首次转发时在锁内注册表项（幂等，签名一并缓存）
                     NSInteger index = [self ensureForwardedPropIndex:cls
                                                                  sel:anInvocation.selector
                                                             propName:targetPropName
-                                                           propIndex:propIndex];
-                    if (index < 0) {
-                        break;
+                                                           propIndex:propIndex
+                                                           signature:anInvocation.methodSignature];
+                    if (index >= 0) {
+                        info = (CBMPropInfo){targetPropName, index, anInvocation.methodSignature};
+                        [self cbm_handleForwardedInvocation:anInvocation info:info];
+                        free(propList);
+                        return;
                     }
-                    if (index < 0) {
-                        break;
-                    }
-                    if (__builtin_expect(!atomic_load_explicit(&_slotsReady, memory_order_acquire), 0)) {
-                        [self ensureSlotArray];
-                    }
-                    CBMPropertySlot* slot = self->_slotArray[index];
-                    
-                    NSValue* value = nil;
-                    if (slot->atomic) {
-                        os_unfair_lock_lock(&slot->_lock);
-                    }
-                    value = slot->_boxedValue;
-                    if (value) {
-                        void* buff = alloca(retSize);
-                        memset(buff, 0, retSize);
-                        [value getValue:buff size:retSize];
-                        [anInvocation setReturnValue:buff];
-                    }
-                    if (slot->atomic) {
-                        os_unfair_lock_unlock(&slot->_lock);
-                    }
-                    resolve = YES;
                     break;
                 }
             }
@@ -1767,40 +2040,17 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
                 }
                 // 目标方法名跟当前属性的setter方法名一致
                 if ([targetSelName isEqualToString:propSetterName]) {
-                    const char* argTypeCode = [anInvocation.methodSignature getArgumentTypeAtIndex:2];
-                    NSUInteger argSize = 0;
-                    NSGetSizeAndAlignment(argTypeCode, &argSize, NULL);
-                    void* buff = alloca(argSize);
-                    [anInvocation getArgument:buff atIndex:2];
-                    
-                    // 结构体/联合体属性无预编译 IMP，首次转发时在锁内注册表项（幂等）
                     NSInteger index = [self ensureForwardedPropIndex:cls
                                                                  sel:anInvocation.selector
                                                             propName:targetPropName
-                                                           propIndex:propIndex];
-                    if (index < 0) {
-                        break;
+                                                           propIndex:propIndex
+                                                           signature:anInvocation.methodSignature];
+                    if (index >= 0) {
+                        info = (CBMPropInfo){targetPropName, index, anInvocation.methodSignature};
+                        [self cbm_handleForwardedInvocation:anInvocation info:info];
+                        free(propList);
+                        return;
                     }
-                    if (__builtin_expect(!atomic_load_explicit(&_slotsReady, memory_order_acquire), 0)) {
-                        [self ensureSlotArray];
-                    }
-                    CBMPropertySlot* slot = self->_slotArray[index];
-                    
-                    // KVO 规范要求 willChange 必须先于变更（观测者在 willChange 内取旧值快照），
-                    // 与标量/对象 setter 的顺序保持一致
-                    [self willChangeValueForKey:targetPropName];
-                    
-                    if (slot->atomic) {
-                        os_unfair_lock_lock(&slot->_lock);
-                    }
-                    slot->_boxedValue = [NSValue value:buff withObjCType:argTypeCode];
-                    if (slot->atomic) {
-                        os_unfair_lock_unlock(&slot->_lock);
-                    }
-                    
-                    [self didChangeValueForKey:targetPropName];
-                    
-                    resolve = YES;
                     break;
                 }
             }
@@ -1808,7 +2058,6 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop) {
         
         // 释放属性列表
         free(propList); propList = NULL;
-        if (resolve) { return; }
     } while ((cls = [cls superclass]) != CBModel.class);
     
     // 以上逻辑都没有完成处理，那就交由父类的方法出处理

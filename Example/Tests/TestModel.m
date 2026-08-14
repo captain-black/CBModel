@@ -38,9 +38,13 @@
 @dynamic rangeValue;
 @dynamic transformValue;
 @dynamic transform3DValue;
+@dynamic customStructValue;
+@dynamic bigStructValue;
+@dynamic unionValue;
 
 @dynamic atomicPointValue;
 @dynamic atomicRectValue;
+@dynamic atomicTransform3DValue;
 
 @dynamic current;
 @dynamic specialName;
