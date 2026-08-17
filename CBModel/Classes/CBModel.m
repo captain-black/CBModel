@@ -1137,8 +1137,9 @@ static NSInteger CBMIndexForPropName(Class cls, NSString *propName) {
 }
 
 static NSUInteger CBMSelHash(SEL sel) {
-    // SEL 是进程内唯一指针且通常 16 字节对齐：先右移去低位零，再乘黄金比例常数打散
-    return (NSUInteger)(((uintptr_t)sel >> 4) * 2654435761u);
+    // SEL 是进程内唯一指针且通常 16 字节对齐：先右移去低位零，再乘黄金比例常数打散。
+    // 先经 void* 再转整数，绕开 clang 对 SEL 直接转整数的弃用警告（SEL 不可字符串化）
+    return (NSUInteger)(((uintptr_t)(const void *)sel >> 4) * 2654435761u);
 }
 
 /// 类表数组：COW（copy-on-write）自动增长，支持插件化场景运行中动态注册新类。
@@ -1258,16 +1259,7 @@ static BOOL CBMInstallDynamicMethod(Class cls, SEL sel, IMP imp, const char *typ
     return added;
 }
 
-+ (BOOL)installDynamicMethod:(SEL)sel
-                        imp:(IMP)imp
-                      types:(const char*)types
-                   propName:(NSString*)propName
-                  propIndex:(NSInteger)propIndex {
-    return CBMInstallDynamicMethod(self, sel, imp, types, propName, propIndex);
-}
-
 #pragma mark - 属性存储（槽数组，v1.4 Phase 2 组件 B）
-/// 按属性编码设置槽的存储语义与原子性（ensureSlotArray 与类属性槽共用）
 /// 按属性编码设置槽的存储语义与原子性（ensureSlotArray 与类属性槽共用）。
 /// rawBytesAllowed：实例属性 YES——标量/已知结构体走裸字节（≤64B 内嵌 Raw，>64B 按需分配 RawBig）；
 /// 类属性 NO——全走 NSValue 装箱（类属性不是热路径，且其 IMP 本就读写 _boxedValue，
@@ -1356,7 +1348,7 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop, B
     os_unfair_lock_unlock(&_initLock);
 }
 
-/// 冷路径取"可装箱值"（KVC/description/sDynamicProperties 合成用）：
+/// 冷路径取"可装箱值"（KVC/description 用）：
 /// Raw/RawBig 槽按属性 T 编码临时装箱（低频路径，装箱开销无所谓）
 - (id)slotValue:(CBMPropertySlot *)slot propName:(NSString *)propName {
     switch (slot->storage) {
@@ -1530,72 +1522,6 @@ static void CBMSetupSlotSemantics(CBMPropertySlot *slot, objc_property_t prop, B
     }
     os_unfair_lock_unlock(&_sel2PropsLock);
     return info.index;
-}
-
-#pragma mark - 属性映射表（按需合成，替代原共享容器）
-/// 强引用属性字典（按需合成）：遍历类链快查表，子类同名属性优先。
-/// 原实现返回"活容器"，现为合成快照——外部修改不影响内部（readonly 语义更严谨）。
-- (NSMutableDictionary<NSString*, id> *)sDynamicProperties {
-    if (__builtin_expect(!atomic_load_explicit(&_slotsReady, memory_order_acquire), 0)) {
-        [self ensureSlotArray];
-    }
-    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
-    Class cls = object_getClass(self);
-    while (cls != NULL && cls != CBModel.class) {
-        CBMSelMap *map = CBMSelMapForClass(cls);
-        if (map != NULL) {
-            for (NSUInteger i = 0; i <= map->mask; i++) {
-                SEL s = atomic_load_explicit(&map->entries[i].sel, memory_order_acquire);
-                if (s != NULL) {
-                    NSString *propName = map->entries[i].propName;
-                    if (dict[propName] == nil) {
-                        CBMPropertySlot *slot = _slotArray[map->entries[i].index];
-                        id value = [self slotValue:slot propName:propName];
-                        if (value != nil) {
-                            dict[propName] = value;
-                        }
-                    }
-                }
-            }
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return dict;
-}
-
-/// 弱引用属性表（按需合成）：仅收集 weak 槽，值已置 nil 的条目跳过
-- (NSMapTable<NSString*, id> *)wDynamicProperties {
-    if (__builtin_expect(!atomic_load_explicit(&_slotsReady, memory_order_acquire), 0)) {
-        [self ensureSlotArray];
-    }
-    NSMapTable *table = [NSMapTable strongToWeakObjectsMapTable];
-    Class cls = object_getClass(self);
-    while (cls != NULL && cls != CBModel.class) {
-        CBMSelMap *map = CBMSelMapForClass(cls);
-        if (map != NULL) {
-            for (NSUInteger i = 0; i <= map->mask; i++) {
-                SEL s = atomic_load_explicit(&map->entries[i].sel, memory_order_acquire);
-                if (s != NULL) {
-                    CBMPropertySlot *slot = _slotArray[map->entries[i].index];
-                    if (slot->storage == CBMPropStorageWeak && slot->_weakValue != nil) {
-                        [table setObject:slot->_weakValue
-                                  forKey:map->entries[i].propName];
-                    }
-                }
-            }
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return table;
-}
-
-@synthesize propertyLocks = _propertyLocks;
-/// 兼容保留：per-property 锁体系已废弃（存储已改为 per-属性槽），该表不再被内部使用
-- (NSMutableDictionary<NSString*, NSLock*> *)propertyLocks {
-    if (_propertyLocks == nil) {
-        _propertyLocks = [NSMutableDictionary dictionary];
-    }
-    return _propertyLocks;
 }
 
 #pragma mark - 动态实现方法
