@@ -79,14 +79,6 @@
 
 @end
 
-@implementation ProtocolPropModel
-
-@dynamic protocolInt;
-@dynamic protocolString;
-@dynamic ownInt;
-
-@end
-
 @implementation ClassPropModel
 
 @dynamic sharedName;

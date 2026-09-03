@@ -16,7 +16,6 @@ JSON 序列化/反序列化建议配合 [YYModel](https://github.com/ibireme/YYM
 - **KVC / KVO**：结构体属性同样支持
 - **readonly 属性**：只注入 getter、不注入 setter（标准 ObjC 语义）
 - **类属性（Class Property）**：类级状态存储
-- **值语义相等性**：`isEqual:` / `hash` 覆盖全部属性，支持 NSSet 去重/缓存场景
 - **插件化**：运行中动态注册任意数量的模型类（`objc_allocateClassPair` + `class_addProperty`），类表 COW 自动增长无上限
 - **高性能**：快查表（SEL 指针哈希，无锁原子读）+ per-属性裸字节槽存储，热路径 ~45ns/操作（标量）、~60-80ns/操作（结构体），未知结构体走签名缓存转发（免扫描）
 

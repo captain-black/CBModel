@@ -19,7 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// 已知结构体(CGPoint/CGSize/CGRect/NSRange/UIEdgeInsets/CGAffineTransform/CATransform3D，预编译 IMP),
 /// 自定义结构体(forwardInvocation 兜底)
 /// - 支持原子性 atomic（per-属性锁）
-/// - 支持 KVC、KVO、readonly、类属性、isEqual:/hash、运行时动态类（插件化）
+/// - 支持 KVC、KVO、readonly、类属性、运行时动态类（插件化）
 /// - 不支持：union、C 数组属性（明确报错/不可声明）
 @interface CBModel : NSObject
 @end

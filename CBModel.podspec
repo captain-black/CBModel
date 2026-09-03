@@ -8,7 +8,7 @@
 
 Pod::Spec.new do |s|
   s.name             = 'CBModel'
-  s.version          = '1.5.0'
+  s.version          = '1.5.1'
   s.summary          = 'CBModel 为其子类在运行时动态绑定 getter 和 setter 的IMP.'
 
 # This description is used to generate tags and improve search results.
@@ -28,8 +28,7 @@ Pod::Spec.new do |s|
 4. 支持 atomic 和 nonatomic 修饰符
 5. 支持 KVC、KVO
 6. 支持 readonly 属性（只注入 getter）与类属性（Class Property）
-7. 值语义相等性：isEqual: / hash 覆盖全部属性
-限制：CBModel 只对 @dynamic 修饰的 property 动态添加 getter、setter 实现；union / C 数组属性不支持
+限制：CBModel 只对 @dynamic 修饰的 property 动态添加 getter、setter 实现；union / C 数组属性不支持；相等性沿用 NSObject 指针语义
                        DESC
 
   s.homepage         = 'https://github.com/captain-black/CBModel'

@@ -142,18 +142,6 @@ typedef union {
 @property (atomic, strong) NSString *strF;
 @end
 
-#pragma mark - 协议属性相等性测试模型（P2）
-
-/// 带协议属性的模型：验证 isEqual/hash 对协议注入属性的覆盖（协议属性 + 类内属性混合）
-@protocol CBProtocolPropTestProtocol <NSObject>
-@property (nonatomic) NSInteger protocolInt;
-@property (nonatomic, strong) NSString *protocolString;
-@end
-
-@interface ProtocolPropModel : CBModel <CBProtocolPropTestProtocol>
-@property (nonatomic) NSInteger ownInt;
-@end
-
 #pragma mark - 类属性测试模型（P2）
 
 /// 类属性（class property）：getter/setter 是类方法，由 resolveClassMethod: 注入，值 per-class 存储
